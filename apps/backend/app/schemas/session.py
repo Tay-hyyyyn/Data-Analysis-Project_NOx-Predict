@@ -38,7 +38,7 @@ class StartSessionRequest(BaseModel):
 class OutputPayload(BaseModel):
     nox: float
     co: float
-    flame_temp: float
+    exhaust_temp: float
     lambda_: float = Field(alias="lambda")
     power: float
 

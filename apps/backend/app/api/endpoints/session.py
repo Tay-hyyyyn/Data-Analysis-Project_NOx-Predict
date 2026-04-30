@@ -40,7 +40,7 @@ def _to_snapshot(state: SimulationState) -> SnapshotResponse:
         output=OutputPayload(
             nox=state.output.nox,
             co=state.output.co,
-            flame_temp=state.output.flame_temp,
+            exhaust_temp=state.output.exhaust_temp,
             power=state.output.power,
             **{"lambda": state.output.lambda_},
         ),

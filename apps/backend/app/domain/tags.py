@@ -58,7 +58,7 @@ class OutputVars:
 
     nox: float            # ppm (가안)
     co: float             # ppm (가안)
-    flame_temp: float     # K (가안)
+    exhaust_temp: float   # °C — IGCC.CC.G1.TTXM
     lambda_: float        # 공기비 (dimensionless)
     power: float          # MW — IGCC.CC.G1.DWATT
 

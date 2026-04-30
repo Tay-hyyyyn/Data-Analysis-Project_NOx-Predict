@@ -115,7 +115,7 @@ class SimLoopManager:
         state.output = OutputVars(
             nox=_lag_step(o.nox, ot.nox, dt, s.tau_nox),
             co=_lag_step(o.co, ot.co, dt, s.tau_co),
-            flame_temp=_lag_step(o.flame_temp, ot.flame_temp, dt, s.tau_temp),
+            exhaust_temp=_lag_step(o.exhaust_temp, ot.exhaust_temp, dt, s.tau_temp),
             lambda_=ot.lambda_,  # λ는 즉시 계산값
             power=_lag_step(o.power, ot.power, dt, s.tau_power),
         )
@@ -134,7 +134,7 @@ class SimLoopManager:
             igv_opening=state.current.igv_opening,
             nox=state.output.nox,
             co=state.output.co,
-            flame_temp=state.output.flame_temp,
+            exhaust_temp=state.output.exhaust_temp,
             lambda_=state.output.lambda_,
             power=state.output.power,
             warning=state.warning,

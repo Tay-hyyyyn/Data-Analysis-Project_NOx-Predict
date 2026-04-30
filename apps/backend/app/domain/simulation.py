@@ -18,12 +18,12 @@ class SimulationState:
     # 출력 — Predictor가 산출한 정상상태 target과 lag 적용된 현재값
     output_target: OutputVars = field(
         default_factory=lambda: OutputVars(
-            nox=20.0, co=10.0, flame_temp=1450.0, lambda_=1.1, power=248.6
+            nox=20.0, co=10.0, exhaust_temp=580.0, lambda_=1.1, power=248.6
         )
     )
     output: OutputVars = field(
         default_factory=lambda: OutputVars(
-            nox=20.0, co=10.0, flame_temp=1450.0, lambda_=1.1, power=248.6
+            nox=20.0, co=10.0, exhaust_temp=580.0, lambda_=1.1, power=248.6
         )
     )
 
