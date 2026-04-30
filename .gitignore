@@ -23,6 +23,7 @@ dist/
 build/
 .next/
 .nuxt/
+.vite/
 coverage/
 
 # Python / backend / analysis
