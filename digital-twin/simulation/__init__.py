@@ -17,10 +17,12 @@ import 경로 주의:
     형태로 사용한다. 백엔드 통합 시점에 폴더명 변경 또는 editable install 결정.
 """
 
+from .config import (
+    DEFAULT_CONFIG,
+    DTConfig,
+)
 from .engine import (
-    DEFAULT_STEP_CONFIG,
     PredictFn,
-    StepConfig,
     create_initial_state,
     sim_step,
 )
@@ -45,9 +47,10 @@ __all__ = [
     # 엔진
     "sim_step",
     "create_initial_state",
-    "StepConfig",
-    "DEFAULT_STEP_CONFIG",
     "PredictFn",
+    # 설정
+    "DTConfig",
+    "DEFAULT_CONFIG",
     # lag
     "apply_first_order_lag",
     "apply_first_order_lag_exact",

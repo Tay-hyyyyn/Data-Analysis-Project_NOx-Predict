@@ -18,33 +18,10 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 
+from .config import DEFAULT_CONFIG, TimeConstants  # noqa: F401 — re-export
 
-# ============================================================
-# 시간 상수 기본값 — 단위는 초
-# [가이드 §3 / TIME_CONSTANT_τ.md — 단계 5 변수별 τ 관리]
-# ------------------------------------------------------------
-# 실측 도출 전 가안값. 백엔드 `app/config.py`의 값과 일치시킬 것.
-# 추후 실제 운전 데이터로 회귀하여 갱신 [조사 필요].
-# ============================================================
-@dataclass(frozen=True)
-class TimeConstants:
-    """변수별 시간 상수 묶음. 단위: 초."""
-
-    # 입력(제어 변수) lag — 가이드 §3 단계 5 입력 lag 영역
-    fuel: float = 1.0    # 합성가스 유량 응답
-    n2: float = 1.0      # 희석질소 응답
-    igv: float = 2.0     # IGV 개도 응답 (기계적 액추에이터라 약간 느림)
-
-    # 출력(연소 결과) lag — 가이드 §3 단계 5 출력 lag 영역
-    temp: float = 10.0   # 화염 온도 — 열관성으로 가장 느림
-    nox: float = 5.0     # NOx 응답
-    co: float = 3.0      # CO 응답
-    power: float = 8.5   # 발전량 응답
-
-
-DEFAULT_TIME_CONSTANTS = TimeConstants()
+DEFAULT_TIME_CONSTANTS = DEFAULT_CONFIG.time_constants
 
 
 # ============================================================

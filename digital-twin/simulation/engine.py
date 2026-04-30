@@ -29,45 +29,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
 
 from . import chemistry, features
-from .lag import (
-    DEFAULT_TIME_CONSTANTS,
-    TimeConstants,
-    apply_first_order_lag_exact,
-)
+from .config import DEFAULT_CONFIG, DTConfig
+from .lag import apply_first_order_lag_exact
 from .state import (
     ControlVars,
     OutputVars,
     SimulationState,
 )
-
-
-# ============================================================
-# step 설정값
-# [가이드 §3 / DT_PRD §5 — 100~500ms 주기, step < 50ms 목표]
-# ============================================================
-@dataclass(frozen=True)
-class StepConfig:
-    """sim_step 호출 시 사용할 설정값 묶음."""
-
-    dt: float = 0.2  # step 시간(초). backend `sim_dt_seconds`와 일치시킬 것.
-
-    # 시간 상수 (lag.py와 동일 단위/의미)
-    time_constants: TimeConstants = DEFAULT_TIME_CONSTANTS
-
-    # NOx 임계치 [조사 필요]
-    nox_threshold_ppm: float = 50.0
-
-    # Zeldovich 결과를 ML target에 가중합할 비율 (0=ML만, 1=Zeldovich만)
-    # [추후 결정] 실측 검증 후 튜닝
-    physics_blend_ratio: float = 0.0
-
-
-DEFAULT_STEP_CONFIG = StepConfig()
 
 
 # ============================================================
@@ -88,7 +60,7 @@ PredictFn = Callable[[ControlVars], OutputVars]
 def sim_step(
     state: SimulationState,
     predict_fn: PredictFn,
-    config: StepConfig = DEFAULT_STEP_CONFIG,
+    config: DTConfig = DEFAULT_CONFIG,
 ) -> SimulationState:
     """디지털 트윈의 단일 step 진행.
 
@@ -100,12 +72,12 @@ def sim_step(
         state:      현재 SimulationState (in-place mutate).
         predict_fn: ControlVars → OutputVars 매핑 함수.
                     프로토타입에서는 backend StubPredictor 또는 MLPredictor.
-        config:     step 설정.
+        config:     DTConfig 설정 묶음.
 
     Returns:
         갱신된 state (동일 객체, 편의를 위해 반환).
     """
-    dt = config.dt
+    dt = config.sim_step.dt
     tau = config.time_constants
 
     # ----------------------------------------------------------
@@ -146,7 +118,7 @@ def sim_step(
     state.output_target = OutputVars(
         nox=ml_output.nox,
         co=ml_output.co,
-        flame_temp=ml_output.flame_temp,
+        exhaust_temp=ml_output.exhaust_temp,
         lambda_=lambda_now,           # features 결과로 덮어쓰기
         efficiency=ml_output.efficiency,
         power=ml_output.power,
@@ -156,9 +128,9 @@ def sim_step(
     # [Step 5] 화염 온도 lag — 출력 lag 영역 시작
     # 가이드 §6 내부 처리 순서 5번
     # ----------------------------------------------------------
-    flame_temp_next = apply_first_order_lag_exact(
-        state.output.flame_temp,
-        state.output_target.flame_temp,
+    exhaust_temp_next = apply_first_order_lag_exact(
+        state.output.exhaust_temp,
+        state.output_target.exhaust_temp,
         dt,
         tau.temp,
     )
@@ -175,7 +147,7 @@ def sim_step(
 
     state.nox_integrated = chemistry.integrate_zeldovich_step(
         nox_current=state.nox_integrated,
-        flame_temp_k=flame_temp_next,
+        exhaust_temp_c=exhaust_temp_next,
         o2_fraction=o2_frac,
         n2_fraction=n2_frac,
         dt=dt,
@@ -190,8 +162,8 @@ def sim_step(
         tau.nox,
     )
     nox_blended = (
-        (1.0 - config.physics_blend_ratio) * nox_lag
-        + config.physics_blend_ratio * state.nox_integrated
+        (1.0 - config.sim_step.physics_blend_ratio) * nox_lag
+        + config.sim_step.physics_blend_ratio * state.nox_integrated
     )
 
     # ----------------------------------------------------------
@@ -207,7 +179,7 @@ def sim_step(
 
     efficiency_now = features.compute_efficiency(
         syngas_flow=state.current.syngas_flow,
-        flame_temp=flame_temp_next,
+        exhaust_temp=exhaust_temp_next,
     )
 
     power_lag = apply_first_order_lag_exact(
@@ -220,7 +192,7 @@ def sim_step(
     state.output = OutputVars(
         nox=nox_blended,
         co=co_lag,
-        flame_temp=flame_temp_next,
+        exhaust_temp=exhaust_temp_next,
         lambda_=lambda_now,
         efficiency=efficiency_now,
         power=power_lag,
@@ -230,7 +202,7 @@ def sim_step(
     # [Step 8] 임계치 비교 & 메타 업데이트
     # 가이드 §6 내부 처리 순서 8번
     # ----------------------------------------------------------
-    state.warning = state.output.nox > config.nox_threshold_ppm
+    state.warning = state.output.nox > config.thresholds.nox_warning_ppm
     state.t += dt
     state.step_count += 1
     state.last_updated = datetime.now(timezone.utc)
@@ -246,6 +218,7 @@ def create_initial_state(
     sid: str,
     initial_controls: ControlVars,
     predict_fn: PredictFn,
+    config: DTConfig = DEFAULT_CONFIG,
 ) -> SimulationState:
     """초기 운전점에서 정상상태 출력으로 미리 채워진 상태 생성.
 
@@ -263,10 +236,10 @@ def create_initial_state(
     output_with_lambda = OutputVars(
         nox=initial_output.nox,
         co=initial_output.co,
-        flame_temp=initial_output.flame_temp,
+        exhaust_temp=initial_output.exhaust_temp,
         lambda_=lambda_init,
         efficiency=features.compute_efficiency(
-            initial_controls.syngas_flow, initial_output.flame_temp
+            initial_controls.syngas_flow, initial_output.exhaust_temp
         ),
         power=initial_output.power,
     )

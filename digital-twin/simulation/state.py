@@ -21,6 +21,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from .config import DEFAULT_CONFIG
+
+_OP = DEFAULT_CONFIG.operating_point
+_IO = DEFAULT_CONFIG.initial_output
+
 
 # ============================================================
 # 제어 입력 변수 (사용자 → DT)
@@ -49,7 +54,7 @@ class ControlVars:
 # 출력 변수 (DT → 백엔드/프론트)
 # [가이드 §3 핵심 출력 / 단계 6 step 산출물]
 # ------------------------------------------------------------
-# - nox/co/flame_temp: lag 모델로 점진 수렴하는 동적 변수
+# - nox/co/exhaust_temp: lag 모델로 점진 수렴하는 동적 변수
 # - lambda_:           즉시 계산값 (lag 미적용)
 # - efficiency:        파생 계산값
 # ============================================================
@@ -60,7 +65,7 @@ class OutputVars:
     Attributes:
         nox:        NOx 농도. 단위 가안 [ppm]. Zeldovich + ML 하이브리드 결과.
         co:         CO 농도. 단위 가안 [ppm]. λ에 강하게 의존.
-        flame_temp: 화염 온도. 단위 가안 [K]. NOx 생성률 지배 변수.
+        exhaust_temp: 배기 온도. IGCC.CC.G1.TTXM 실측값 기반. 단위 [°C].
         lambda_:    공기비(λ). 무차원. λ=1이 stoichiometric.
         efficiency: 발전 효율. 무차원(0~1) 또는 % [추후 결정].
         power:      발전량 [MW]. (추후 정상상태 ML 회귀로 산출)
@@ -68,7 +73,7 @@ class OutputVars:
 
     nox: float
     co: float
-    flame_temp: float
+    exhaust_temp: float
     lambda_: float
     efficiency: float
     power: float
@@ -95,24 +100,32 @@ class SimulationState:
     # ---- 제어 변수: target → (lag) → current ----
     # [가이드 단계 5 "lag 모델"의 입력 lag 영역]
     target: ControlVars = field(
-        default_factory=lambda: ControlVars(1500.0, 200.0, 75.0)
+        default_factory=lambda: ControlVars(_OP.syngas_flow, _OP.n2_offset, _OP.igv_opening)
     )
     current: ControlVars = field(
-        default_factory=lambda: ControlVars(1500.0, 200.0, 75.0)
+        default_factory=lambda: ControlVars(_OP.syngas_flow, _OP.n2_offset, _OP.igv_opening)
     )
 
     # ---- 출력 변수: ML 추론 → output_target → (lag/ODE) → output ----
     # [가이드 단계 4 ML 회귀 결과 보관 + 단계 5 출력 lag 영역]
     output_target: OutputVars = field(
         default_factory=lambda: OutputVars(
-            nox=20.0, co=10.0, flame_temp=1450.0, lambda_=1.10,
-            efficiency=0.89, power=248.6,
+            nox=_IO.nox,
+            co=_IO.co,
+            exhaust_temp=_IO.exhaust_temp,
+            lambda_=_IO.lambda_,
+            efficiency=_IO.efficiency,
+            power=_IO.power,
         )
     )
     output: OutputVars = field(
         default_factory=lambda: OutputVars(
-            nox=20.0, co=10.0, flame_temp=1450.0, lambda_=1.10,
-            efficiency=0.89, power=248.6,
+            nox=_IO.nox,
+            co=_IO.co,
+            exhaust_temp=_IO.exhaust_temp,
+            lambda_=_IO.lambda_,
+            efficiency=_IO.efficiency,
+            power=_IO.power,
         )
     )
 
@@ -120,7 +133,7 @@ class SimulationState:
     # [가이드 단계 3 — Zeldovich ODE의 적분 결과를 별도 보관]
     # NOx 최종값은 lag/ODE 둘 중 하나의 동역학을 선택하거나
     # 두 결과를 가중합할 수 있게 분리 저장한다.
-    nox_integrated: float = 20.0
+    nox_integrated: float = field(default_factory=lambda: _IO.nox_integrated)
 
     # ---- 메타데이터 ----
     last_updated: datetime = field(
