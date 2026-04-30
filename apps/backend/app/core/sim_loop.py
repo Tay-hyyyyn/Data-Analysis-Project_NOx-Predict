@@ -18,8 +18,7 @@ from app.config import Settings
 from app.core.input_injector import InputInjector
 from app.core.state_store import StateStore
 from app.core.ws_manager import WebSocketManager
-from app.domain.simulation import SimulationState
-from app.domain.tags import ControlVars, OutputVars
+from digital_twin.simulation import ControlVars, OutputVars, SimulationState
 from app.schemas.stream import StreamMessage
 
 logger = logging.getLogger(__name__)

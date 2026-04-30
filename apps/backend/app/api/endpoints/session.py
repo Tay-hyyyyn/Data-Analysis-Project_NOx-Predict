@@ -3,7 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from app.api.deps import get_session_service
-from app.domain.simulation import SimulationState
+from digital_twin.simulation import SimulationState
 from app.schemas.common import AckResponse
 from app.schemas.session import (
     ControlPayload,

@@ -4,7 +4,7 @@
 """
 
 from app.adapters.predictor import StubPredictor
-from app.domain.tags import ControlVars
+from digital_twin.simulation import ControlVars
 
 
 def test_higher_syngas_increases_exhaust_temp():

@@ -14,7 +14,7 @@
 import math
 
 from app.adapters.predictor.base import Predictor
-from app.domain.tags import ControlVars, OutputVars
+from digital_twin.simulation import ControlVars, OutputVars
 
 
 class StubPredictor:

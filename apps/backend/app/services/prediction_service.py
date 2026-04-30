@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from app.adapters.predictor import Predictor
 from app.config import Settings
 from app.core.state_store import StateStore
-from app.domain.tags import ControlVars
+from digital_twin.simulation import ControlVars
 from app.schemas.prediction import PredictionResponse
 
 

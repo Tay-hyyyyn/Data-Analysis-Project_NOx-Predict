@@ -2,12 +2,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from app.domain.tags import (
-    TAG_IGV_OPENING,
-    TAG_N2_OFFSET,
-    TAG_SYNGAS_FLOW,
-    ControlVars,
-)
+from app.domain.tags import TAG_IGV_OPENING, TAG_N2_OFFSET, TAG_SYNGAS_FLOW
+from digital_twin.simulation import ControlVars
 
 
 class ControlPayload(BaseModel):

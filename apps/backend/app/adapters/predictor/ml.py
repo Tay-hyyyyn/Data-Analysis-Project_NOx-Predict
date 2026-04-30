@@ -4,7 +4,7 @@
 인터페이스는 `app.adapters.predictor.base.Predictor`를 따른다.
 """
 
-from app.domain.tags import ControlVars, OutputVars
+from digital_twin.simulation import ControlVars, OutputVars
 from app.exceptions import PredictorUnavailableError
 
 
