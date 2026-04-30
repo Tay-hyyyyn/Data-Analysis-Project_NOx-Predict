@@ -20,15 +20,10 @@ from __future__ import annotations
 
 import math
 
+from .config import DEFAULT_CONFIG, FeatureConfig, OperatingPoint
 
-# ============================================================
-# 기준 운전점 — Stub Predictor와 동일 값 사용
-# [가이드 단계 0 — 변수별 기본 step / 운영 한계 기준값]
-# 추후 실측 데이터 통계로 교체 [DB 협의 필요]
-# ============================================================
-REF_SYNGAS_FLOW = 1500.0   # 합성가스 유량 기준점
-REF_N2_OFFSET = 200.0      # 희석질소 오프셋 기준점
-REF_IGV_OPENING = 75.0     # IGV 개도 기준점(%)
+_OP = DEFAULT_CONFIG.operating_point
+_FC = DEFAULT_CONFIG.features
 
 
 # ============================================================
@@ -49,8 +44,8 @@ def compute_lambda(
     n2_offset: float,
     igv_opening: float,
     *,
-    base_lambda: float = 1.10,
-    n2_correction: float = 0.0005,
+    op: OperatingPoint = _OP,
+    fc: FeatureConfig = _FC,
 ) -> float:
     """공기비 λ 근사 계산.
 
@@ -58,24 +53,19 @@ def compute_lambda(
         syngas_flow: 합성가스 유량.
         n2_offset:   희석질소 오프셋.
         igv_opening: IGV 개도(%) — 공기 유량 비례 변수로 사용.
-        base_lambda: 기준 운전점에서의 λ. [DB 협의 필요] 실측 평균값으로 교체 예정.
-        n2_correction: N2 1단위 증가당 λ 보정 계수.
+        op: 기준 운전점 설정.
+        fc: 피처 계산 상수.
 
     Returns:
-        λ (무차원). 0.5 미만으로 떨어지지 않도록 클램프.
+        λ (무차원). lambda_min 미만으로 떨어지지 않도록 클램프.
     """
-    # 0으로 나눗셈 방지
-    igv_ratio = max(igv_opening, 1.0) / REF_IGV_OPENING
-    fuel_ratio = max(syngas_flow, 1.0) / REF_SYNGAS_FLOW
+    igv_ratio = max(igv_opening, 1.0) / op.igv_opening
+    fuel_ratio = max(syngas_flow, 1.0) / op.syngas_flow
 
-    # 공기 / 연료 비율로 λ 변동을 표현
-    lambda_ = base_lambda * (igv_ratio / fuel_ratio)
+    lambda_ = fc.base_lambda * (igv_ratio / fuel_ratio)
+    lambda_ += (n2_offset - op.n2_offset) * fc.n2_correction
 
-    # N2 추가 → 약간의 lean 보정 (질량 추가 효과)
-    lambda_ += (n2_offset - REF_N2_OFFSET) * n2_correction
-
-    # 비물리적 음수/0 방지
-    return max(0.5, lambda_)
+    return max(DEFAULT_CONFIG.thresholds.lambda_min, lambda_)
 
 
 # ============================================================
@@ -90,20 +80,18 @@ def compute_lambda(
 def compute_co(
     lambda_: float,
     *,
-    base_co: float = 12.0,
-    sensitivity: float = 80.0,
+    fc: FeatureConfig = _FC,
 ) -> float:
     """CO 농도 근사 계산.
 
     Args:
-        lambda_:     공기비.
-        base_co:     λ=1에서의 CO 베이스라인. [조사 필요] 실측 도출.
-        sensitivity: (λ-1)^2 항의 가중치. [조사 필요].
+        lambda_: 공기비.
+        fc: 피처 계산 상수.
 
     Returns:
         CO 농도(ppm 가안). 0 미만 클램프.
     """
-    return max(0.0, base_co + sensitivity * (lambda_ - 1.0) ** 2)
+    return max(0.0, fc.base_co + fc.co_sensitivity * (lambda_ - 1.0) ** 2)
 
 
 # ============================================================
@@ -117,26 +105,24 @@ def compute_efficiency(
     syngas_flow: float,
     exhaust_temp: float,
     *,
-    base_efficiency: float = 0.89,
-    temp_sensitivity: float = 0.0001,
+    op: OperatingPoint = _OP,
+    fc: FeatureConfig = _FC,
 ) -> float:
     """발전 효율 근사.
 
     Args:
-        syngas_flow:      합성가스 유량.
-        exhaust_temp:     현재 배기 온도(°C). IGCC.CC.G1.TTXM 실측 기반.
-        base_efficiency:  기준 효율. [추후 결정]
-        temp_sensitivity: 온도 1°C 변동당 효율 변동. [조사 필요]
+        syngas_flow:  합성가스 유량.
+        exhaust_temp: 현재 배기 온도(°C). IGCC.CC.G1.TTXM 실측 기반.
+        op: 기준 운전점 설정.
+        fc: 피처 계산 상수.
 
     Returns:
         무차원 효율. [0.0, 1.0] 클램프.
     """
-    # 배기온도 기준점 580°C (TTXM 운전 평균 가안)
-    eta = base_efficiency + (exhaust_temp - 580.0) * temp_sensitivity
+    eta = fc.base_efficiency + (exhaust_temp - op.exhaust_temp) * fc.temp_sensitivity
 
-    # 합성가스 유량이 기준점에서 멀어지면 효율 약간 감소 (off-design 패널티)
-    fuel_deviation = abs(syngas_flow - REF_SYNGAS_FLOW) / REF_SYNGAS_FLOW
-    eta -= fuel_deviation * 0.02
+    fuel_deviation = abs(syngas_flow - op.syngas_flow) / op.syngas_flow
+    eta -= fuel_deviation * fc.off_design_penalty
 
     return max(0.0, min(1.0, eta))
 
@@ -151,13 +137,13 @@ def compute_efficiency(
 def compute_air_flow(
     igv_opening: float,
     *,
-    ref_air_flow: float = 4500.0,  # IGV 75%일 때 가안 공기유량 [kg/h]
+    op: OperatingPoint = _OP,
 ) -> float:
     """IGV 개도 → 추정 공기 유량.
 
     선형 비례 가정 (실제는 비선형이지만 프로토타입 한정 단순화).
     """
-    return ref_air_flow * (igv_opening / REF_IGV_OPENING)
+    return op.air_flow * (igv_opening / op.igv_opening)
 
 
 # ============================================================
@@ -170,7 +156,7 @@ def compute_air_flow(
 def compute_o2_fraction(
     lambda_: float,
     *,
-    o2_in_air: float = 0.21,
+    fc: FeatureConfig = _FC,
 ) -> float:
     """λ로부터 배기 중 O2 몰분율 근사.
 
@@ -178,21 +164,20 @@ def compute_o2_fraction(
     """
     if lambda_ <= 1.0:
         return 0.0
-    # 단순 가정: 잉여 공기의 O2가 그대로 잔존
     excess_air_ratio = (lambda_ - 1.0) / lambda_
-    return o2_in_air * excess_air_ratio
+    return fc.o2_in_air * excess_air_ratio
 
 
 def compute_n2_fraction(
     lambda_: float,
     n2_offset: float,
     *,
-    n2_in_air: float = 0.79,
+    op: OperatingPoint = _OP,
+    fc: FeatureConfig = _FC,
 ) -> float:
     """배기 중 N2 몰분율 근사.
 
     공기 중 N2 + 희석 N2 주입분을 합산. Zeldovich의 N2 분압 입력으로 사용.
     """
-    # 희석 N2는 base 기준 대비 증가분만큼 N2 몰분율을 증가시킨다고 가정
-    delta_n2 = max(0.0, (n2_offset - REF_N2_OFFSET) / 1000.0)
-    return min(1.0, n2_in_air + delta_n2)
+    delta_n2 = max(0.0, (n2_offset - op.n2_offset) / fc.n2_scale)
+    return min(1.0, fc.n2_in_air + delta_n2)

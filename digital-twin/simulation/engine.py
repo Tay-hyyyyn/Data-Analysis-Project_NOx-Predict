@@ -29,45 +29,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
 
 from . import chemistry, features
-from .lag import (
-    DEFAULT_TIME_CONSTANTS,
-    TimeConstants,
-    apply_first_order_lag_exact,
-)
+from .config import DEFAULT_CONFIG, DTConfig
+from .lag import apply_first_order_lag_exact
 from .state import (
     ControlVars,
     OutputVars,
     SimulationState,
 )
-
-
-# ============================================================
-# step 설정값
-# [가이드 §3 / DT_PRD §5 — 100~500ms 주기, step < 50ms 목표]
-# ============================================================
-@dataclass(frozen=True)
-class StepConfig:
-    """sim_step 호출 시 사용할 설정값 묶음."""
-
-    dt: float = 0.2  # step 시간(초). backend `sim_dt_seconds`와 일치시킬 것.
-
-    # 시간 상수 (lag.py와 동일 단위/의미)
-    time_constants: TimeConstants = DEFAULT_TIME_CONSTANTS
-
-    # NOx 임계치 [조사 필요]
-    nox_threshold_ppm: float = 50.0
-
-    # Zeldovich 결과를 ML target에 가중합할 비율 (0=ML만, 1=Zeldovich만)
-    # [추후 결정] 실측 검증 후 튜닝
-    physics_blend_ratio: float = 0.0
-
-
-DEFAULT_STEP_CONFIG = StepConfig()
 
 
 # ============================================================
@@ -88,7 +60,7 @@ PredictFn = Callable[[ControlVars], OutputVars]
 def sim_step(
     state: SimulationState,
     predict_fn: PredictFn,
-    config: StepConfig = DEFAULT_STEP_CONFIG,
+    config: DTConfig = DEFAULT_CONFIG,
 ) -> SimulationState:
     """디지털 트윈의 단일 step 진행.
 
@@ -100,12 +72,12 @@ def sim_step(
         state:      현재 SimulationState (in-place mutate).
         predict_fn: ControlVars → OutputVars 매핑 함수.
                     프로토타입에서는 backend StubPredictor 또는 MLPredictor.
-        config:     step 설정.
+        config:     DTConfig 설정 묶음.
 
     Returns:
         갱신된 state (동일 객체, 편의를 위해 반환).
     """
-    dt = config.dt
+    dt = config.sim_step.dt
     tau = config.time_constants
 
     # ----------------------------------------------------------
@@ -190,8 +162,8 @@ def sim_step(
         tau.nox,
     )
     nox_blended = (
-        (1.0 - config.physics_blend_ratio) * nox_lag
-        + config.physics_blend_ratio * state.nox_integrated
+        (1.0 - config.sim_step.physics_blend_ratio) * nox_lag
+        + config.sim_step.physics_blend_ratio * state.nox_integrated
     )
 
     # ----------------------------------------------------------
@@ -230,7 +202,7 @@ def sim_step(
     # [Step 8] 임계치 비교 & 메타 업데이트
     # 가이드 §6 내부 처리 순서 8번
     # ----------------------------------------------------------
-    state.warning = state.output.nox > config.nox_threshold_ppm
+    state.warning = state.output.nox > config.thresholds.nox_warning_ppm
     state.t += dt
     state.step_count += 1
     state.last_updated = datetime.now(timezone.utc)
@@ -246,6 +218,7 @@ def create_initial_state(
     sid: str,
     initial_controls: ControlVars,
     predict_fn: PredictFn,
+    config: DTConfig = DEFAULT_CONFIG,
 ) -> SimulationState:
     """초기 운전점에서 정상상태 출력으로 미리 채워진 상태 생성.
 

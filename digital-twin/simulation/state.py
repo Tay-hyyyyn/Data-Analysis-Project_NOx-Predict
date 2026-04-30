@@ -21,6 +21,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from .config import DEFAULT_CONFIG
+
+_OP = DEFAULT_CONFIG.operating_point
+_IO = DEFAULT_CONFIG.initial_output
+
 
 # ============================================================
 # 제어 입력 변수 (사용자 → DT)
@@ -95,24 +100,32 @@ class SimulationState:
     # ---- 제어 변수: target → (lag) → current ----
     # [가이드 단계 5 "lag 모델"의 입력 lag 영역]
     target: ControlVars = field(
-        default_factory=lambda: ControlVars(1500.0, 200.0, 75.0)
+        default_factory=lambda: ControlVars(_OP.syngas_flow, _OP.n2_offset, _OP.igv_opening)
     )
     current: ControlVars = field(
-        default_factory=lambda: ControlVars(1500.0, 200.0, 75.0)
+        default_factory=lambda: ControlVars(_OP.syngas_flow, _OP.n2_offset, _OP.igv_opening)
     )
 
     # ---- 출력 변수: ML 추론 → output_target → (lag/ODE) → output ----
     # [가이드 단계 4 ML 회귀 결과 보관 + 단계 5 출력 lag 영역]
     output_target: OutputVars = field(
         default_factory=lambda: OutputVars(
-            nox=20.0, co=10.0, exhaust_temp=580.0, lambda_=1.10,
-            efficiency=0.89, power=248.6,
+            nox=_IO.nox,
+            co=_IO.co,
+            exhaust_temp=_IO.exhaust_temp,
+            lambda_=_IO.lambda_,
+            efficiency=_IO.efficiency,
+            power=_IO.power,
         )
     )
     output: OutputVars = field(
         default_factory=lambda: OutputVars(
-            nox=20.0, co=10.0, exhaust_temp=580.0, lambda_=1.10,
-            efficiency=0.89, power=248.6,
+            nox=_IO.nox,
+            co=_IO.co,
+            exhaust_temp=_IO.exhaust_temp,
+            lambda_=_IO.lambda_,
+            efficiency=_IO.efficiency,
+            power=_IO.power,
         )
     )
 
@@ -120,7 +133,7 @@ class SimulationState:
     # [가이드 단계 3 — Zeldovich ODE의 적분 결과를 별도 보관]
     # NOx 최종값은 lag/ODE 둘 중 하나의 동역학을 선택하거나
     # 두 결과를 가중합할 수 있게 분리 저장한다.
-    nox_integrated: float = 20.0
+    nox_integrated: float = field(default_factory=lambda: _IO.nox_integrated)
 
     # ---- 메타데이터 ----
     last_updated: datetime = field(
