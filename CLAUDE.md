@@ -1,80 +1,44 @@
-# NOxO Project - Claude 작업 지침
+# NOxO Project - Claude/Codex 작업 지침
 
-## 커밋 & 푸시 규칙
+> 이 파일은 **map** 역할을 한다. 작업 시 해당 영역의 CLAUDE.md를 먼저 읽고 진행한다.
 
-### 커밋/푸시 요청 시 반드시 아래 순서를 따른다
-
-1. **브랜치 확인** (`git branch`)
-   - 작업 내용과 현재 브랜치가 일치하는지 확인
-   - 이상이 있으면 사용자에게 먼저 알린다
-
-2. **작업 폴더만 add** (`git add <작업중인_폴더/파일>`)
-   - `git add .` 또는 `git add -A` 금지
-   - 현재 작업 중인 폴더/파일만 명시적으로 스테이징
-
-3. **커밋 메시지 작성 후 커밋**
-   - 아래 커밋 규칙에 맞춰 메시지 작성
-   - `git commit -m "이모지 타입 : 설명"`
-
-4. **최종 확인 후 푸시**
-   - `git status`, `git log -1` 로 이상 없는지 확인
-   - 확인 후 `git push`
-
----
-
-## 커밋 메시지 형식
-
-```
-이모지 타입 : 작업 내용
-```
-
-**예시:**
-```
-✨ feat : 게시글 등록 기능
-🐛 bugfix : 로그인 토큰 만료 오류 수정
-```
-
----
-
-## 작업 타입 목록
-
-| 이모지 | 타입 | 설명 |
-|--------|------|------|
-| ✨ | feat | 새로운 기능 추가 |
-| 🎉 | add | 파일 생성, 초기 세팅 |
-| 🐛 | bugfix | 버그 수정 |
-| ♻️ | refactor | 코드 리팩토링 |
-| 🩹 | fix | 코드 수정 |
-| 🚚 | move | 파일 이동/정리 |
-| 🔥 | del | 기능/파일 삭제 |
-| 🍻 | test | 테스트 코드 작성 |
-| 💄 | style | CSS 스타일 작업 |
-| 🙈 | gitfix | .gitignore 수정 |
-| 🔨 | script | package.json 변경 (npm 설치 등) |
-
----
-
-## 폴더 구조 & 브랜치 매핑
+## 프로젝트 구조
 
 ```
 NOxO_Project_Repo/
 ├── apps/
-│   ├── frontend/    # 프론트엔드
-│   └── backend/     # 백엔드
-├── analysis/        # 데이터 분석 (notebooks, reports)
-├── data/            # 데이터셋
-├── database/        # DB 관련
-├── digital_twin/    # 디지털 트윈
-└── docs/            # 문서
+│   ├── frontend/      # React + Vite 대시보드
+│   └── backend/       # FastAPI 서버
+├── digital_twin/      # 시뮬 엔진 + ML 모델
+├── database/          # PostgreSQL 스키마
+├── analysis/          # 데이터 분석/EDA
+├── airflow/           # 데이터 파이프라인 (DAG)
+├── docker/            # 컨테이너 구성
+├── data/              # 데이터셋 저장소 (코드 작업 영역 아님)
+├── docs/              # PRD, Architecture, 컨벤션
+├── scripts/           # 공통 스크립트 (sync 등)
+└── .githooks/         # 공유 git hooks
 ```
 
-- **main** : 배포용 (직접 커밋 지양)
-- **dev** : 개발 통합 브랜치
+## 영역별 가이드
 
----
+작업 영역에 해당하는 CLAUDE.md를 먼저 읽고 진행한다.
 
-## Issues 제목 형식
+- **apps/frontend** — UI/대시보드 작업 → [`apps/frontend/CLAUDE.md`](apps/frontend/CLAUDE.md)
+- **apps/backend** — API/시뮬 세션 작업 → [`apps/backend/CLAUDE.md`](apps/backend/CLAUDE.md)
+- **digital_twin** — 시뮬 엔진/모델 작업 → [`digital_twin/CLAUDE.md`](digital_twin/CLAUDE.md)
+- **database** — 스키마/쿼리 → [`database/CLAUDE.md`](database/CLAUDE.md)
+- **analysis** — 분석 노트북/리포트 → [`analysis/CLAUDE.md`](analysis/CLAUDE.md)
+- **airflow** — DAG/파이프라인 → [`airflow/CLAUDE.md`](airflow/CLAUDE.md)
+- **docker** — 컨테이너/배포 → [`docker/CLAUDE.md`](docker/CLAUDE.md)
 
-```
-[TASK] XXX 기능 구현
-```
+## Git 컨벤션
+
+모든 커밋/푸시 작업은 [`docs/GIT_CONVENTIONS.md`](docs/GIT_CONVENTIONS.md)를 따른다.
+
+## 주의사항 학습 (`/learn`)
+
+작업 중 실수가 발생하면 `/learn [메모]`로 해당 영역 CLAUDE.md의 "⚠️ 학습된 주의사항" 섹션에 누적한다.
+- 인자 없이 호출하면 최근 대화에서 자동 추론
+- 인자가 있으면 그 내용을 추가
+- 커맨드 정의: `docs/commands/learn.md`
