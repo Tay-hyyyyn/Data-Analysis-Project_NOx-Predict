@@ -44,6 +44,8 @@ data/**
 !data/**/
 !data/**/.gitkeep
 docs/**
+!docs/
+!docs/GIT_CONVENTIONS.md
 models/**
 !models/
 !models/**/
