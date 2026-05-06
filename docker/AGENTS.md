@@ -8,6 +8,7 @@
 - `docker-compose.dev.yml` — 개발 환경
 - `docker-compose.prod.yml` — 프로덕션 환경
 - `docker-compose.data.yml` — 데이터 관련 서비스
+- `docker-compose.ec2.yml` — EC2 배포 시 백엔드-PostgreSQL 연결 override
 - `jenkins-compose.yml` — 로컬 Jenkins CI 테스트 환경
 - `README.md` — Docker 운영 안내
 

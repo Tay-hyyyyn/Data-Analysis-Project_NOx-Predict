@@ -61,3 +61,25 @@ Jenkins 설정과 job 기록까지 지우려면 volume도 함께 삭제합니다
 ```bash
 docker compose -f docker/jenkins-compose.yml down -v
 ```
+
+## EC2 수동 배포 확인
+
+EC2에서는 백엔드 컨테이너가 같은 Docker 네트워크의 PostgreSQL 컨테이너를 바라보도록 `docker-compose.ec2.yml`을 함께 적용합니다.
+
+```bash
+docker compose --profile local-db --env-file .env \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.prod.yml \
+  -f docker/docker-compose.ec2.yml \
+  up -d --build
+```
+
+컨테이너 상태 확인:
+
+```bash
+docker compose --profile local-db --env-file .env \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.prod.yml \
+  -f docker/docker-compose.ec2.yml \
+  ps
+```

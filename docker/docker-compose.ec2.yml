@@ -1,0 +1,7 @@
+services:
+  backend:
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-igcc_db}
+    depends_on:
+      postgres:
+        condition: service_healthy
