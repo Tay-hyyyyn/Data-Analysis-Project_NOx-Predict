@@ -37,51 +37,82 @@
     "IGCC.CC.G1.ROUTPUT_6",
     "IGCC.IG.PIC7069A.PV",
     "IGCC.IG.ZT7069B.PV",
-    "IGCC.DeNOX.AIT_H1_902",
     "IGCC.DeNOX.TT_H1_90123",
     "IGCC.CC.G1.itdp",
-    "IGCC.CC.G1.tcsph1"
+    "IGCC.CC.G1.tcsph1",
+    "feat_NPR_avg",
+    "feat_NPR_gap",
+    "feat_NPR_hinge",
+    "feat_NPR_x_NQJ",
+    "feat_NQJ_lag_1min",
+    "feat_NQJ_lag_3min",
+    "feat_NQJ_lag_5min",
+    "feat_TTXM_lag_1min",
+    "feat_TTXM_roll_5min",
+    "feat_TTXM_roll_15min"
   ],
   "targets": [
     "IGCC.DeNOX.AT_H1_901_PV",
     "IGCC.CC.G1.DWATT",
     "IGCC.CC.G1.TTXM"
   ],
-  "n_features": 40,
-  "train_samples": 1209599,
-  "test_samples": 86400,
+  "n_features": 49,
+  "train_samples": 1209150,
+  "test_samples": 85951,
+  "feature_engineering": {
+    "removed": [
+      "IGCC.DeNOX.AIT_H1_902 (H1: 준누수 제외)"
+    ],
+    "added_h5_npr": [
+      "feat_NPR_avg",
+      "feat_NPR_gap",
+      "feat_NPR_hinge",
+      "feat_NPR_x_NQJ"
+    ],
+    "added_h3_nqj_lag": [
+      "feat_NQJ_lag_1min",
+      "feat_NQJ_lag_3min",
+      "feat_NQJ_lag_5min"
+    ],
+    "added_h4_ttxm": [
+      "feat_TTXM_lag_1min",
+      "feat_TTXM_roll_5min",
+      "feat_TTXM_roll_15min"
+    ],
+    "npr_hinge_threshold": 1.256052
+  },
   "train_performance": {
     "IGCC.DeNOX.AT_H1_901_PV": {
-      "mae": 0.007208023329009707,
-      "rmse": 0.012923853226239995,
-      "r2": 0.9950610759218509
+      "mae": 0.056128331850773996,
+      "rmse": 0.08515129108733997,
+      "r2": 0.7855707296228526
     },
     "IGCC.CC.G1.DWATT": {
-      "mae": 0.23184978078812787,
-      "rmse": 0.3204058241048291,
-      "r2": 0.9983792729973464
+      "mae": 0.23135922172785067,
+      "rmse": 0.31980470550345064,
+      "r2": 0.9983854243813507
     },
     "IGCC.CC.G1.TTXM": {
-      "mae": 0.3688059156633227,
-      "rmse": 0.5005227360750827,
-      "r2": 0.9946245126340217
+      "mae": 0.36571023009654235,
+      "rmse": 0.49062239644465433,
+      "r2": 0.9948356401154154
     }
   },
   "test_performance": {
     "IGCC.DeNOX.AT_H1_901_PV": {
-      "mae": 0.00979374924869454,
-      "rmse": 0.0183296507809124,
-      "r2": 0.9833693067794455
+      "mae": 0.0786129687561376,
+      "rmse": 0.10339914687422386,
+      "r2": 0.47068552261889185
     },
     "IGCC.CC.G1.DWATT": {
-      "mae": 0.23036054821640176,
-      "rmse": 0.3051306830903866,
-      "r2": 0.9970195060289021
+      "mae": 0.23214481828595027,
+      "rmse": 0.30928063147818635,
+      "r2": 0.996952124987093
     },
     "IGCC.CC.G1.TTXM": {
-      "mae": 0.4075285250037066,
-      "rmse": 0.5387405020375365,
-      "r2": 0.9879423299653716
+      "mae": 0.4072535224505962,
+      "rmse": 0.5318521204786918,
+      "r2": 0.9883029311864456
     }
   }
 }

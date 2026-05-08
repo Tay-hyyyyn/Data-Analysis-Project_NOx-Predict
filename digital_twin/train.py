@@ -60,6 +60,7 @@ def save_artifacts(
     test_metrics: dict,
     train_samples: int,
     test_samples: int,
+    npr_hinge_threshold: float,
 ) -> None:
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     joblib.dump(model, MODELS_DIR / "dt_multi_model.pkl")
@@ -70,6 +71,13 @@ def save_artifacts(
         "n_features": len(features),
         "train_samples": train_samples,
         "test_samples": test_samples,
+        "feature_engineering": {
+            "removed": ["IGCC.DeNOX.AIT_H1_902 (H1: 준누수 제외)"],
+            "added_h5_npr": ["feat_NPR_avg", "feat_NPR_gap", "feat_NPR_hinge", "feat_NPR_x_NQJ"],
+            "added_h3_nqj_lag": ["feat_NQJ_lag_1min", "feat_NQJ_lag_3min", "feat_NQJ_lag_5min"],
+            "added_h4_ttxm": ["feat_TTXM_lag_1min", "feat_TTXM_roll_5min", "feat_TTXM_roll_15min"],
+            "npr_hinge_threshold": npr_hinge_threshold,
+        },
         "train_performance": train_metrics,
         "test_performance": test_metrics,
     }
@@ -81,15 +89,21 @@ if __name__ == "__main__":
     root = Path(__file__).parent.parent
 
     print("Loading train data...")
-    train_df = load_data(root / "data" / "NOx_train_20250811_20250824.csv")
+    train_df, npr_threshold = load_data(root / "data" / "NOx_train_20250811_20250824.csv")
+    print(f"  NPR hinge threshold (train median): {npr_threshold:.4f}")
+
     print("Loading test data...")
-    test_df = load_data(root / "data" / "NOx_test_20250825.csv")
+    test_df, _ = load_data(
+        root / "data" / "NOx_test_20250825.csv",
+        npr_hinge_threshold=npr_threshold,   # 학습 기준값 고정
+    )
 
     X_train, y_train = split_xy(train_df)
     X_test, y_test = split_xy(test_df)
     print(f"Train: {len(X_train):,} rows | Test: {len(X_test):,} rows")
+    print(f"Features: {len(FEATURES)} (RAW 39 + DERIVED 10)")
 
-    print("Training MultiOutputRegressor(LGBMRegressor)...")
+    print("\nTraining MultiOutputRegressor(LGBMRegressor)...")
     model = train_model(X_train, y_train)
 
     print("Evaluating...")
@@ -103,9 +117,11 @@ if __name__ == "__main__":
     }
     for target in TARGETS:
         label = target_labels[target]
+        tm = train_metrics[target]
+        te = test_metrics[target]
         print(f"\n[{label}]")
-        print(f"  Train  MAE={train_metrics[target]['mae']:.4f}  R²={train_metrics[target]['r2']:.4f}")
-        print(f"  Test   MAE={test_metrics[target]['mae']:.4f}  R²={test_metrics[target]['r2']:.4f}")
+        print(f"  Train  MAE={tm['mae']:.4f}  RMSE={tm['rmse']:.4f}  R²={tm['r2']:.4f}")
+        print(f"  Test   MAE={te['mae']:.4f}  RMSE={te['rmse']:.4f}  R²={te['r2']:.4f}")
 
     save_artifacts(
         model=model,
@@ -114,5 +130,6 @@ if __name__ == "__main__":
         test_metrics=test_metrics,
         train_samples=len(X_train),
         test_samples=len(X_test),
+        npr_hinge_threshold=npr_threshold,
     )
-    print("\nArtifacts saved to digital-twin/models/")
+    print("\nArtifacts saved to digital_twin/models/")
