@@ -22,7 +22,6 @@ export function ServicePage() {
     setActiveVar,
     stepActiveVar,
     resetControls,
-    toggleOverlay,
     updateActiveVariableConfig,
     restoreActiveVariableDefaults,
   } = useConsoleState(mode)
@@ -112,56 +111,18 @@ export function ServicePage() {
               <div className="panel-header-left">
                 <span className="panel-title">공정 모니터링</span>
               </div>
-              <button
-                type="button"
-                className={state.overlayVisible ? 'overlay-toggle' : 'overlay-toggle off'}
-                onClick={toggleOverlay}
-              >
-                <EyeIcon />
-                오버레이 표시
-              </button>
             </header>
-            <div className="plant-body">
-              <div className="plant-frame" />
-              <div className="plant-hint mono">도면 이미지 자리 (plant-diagram.svg)</div>
-              <PlantDiagram n2Label={state.variables.n2.shortLabel} />
-              {state.overlayVisible ? (
-                <div className="overlay-layer">
-                  <div className="overlay-anchor top-left">
-                    <OverlayMetric
-                      label={state.variables.syngas.shortLabel}
-                      value={`${formatValue(state.variables.syngas.value, state.variables.syngas.digits)} ${state.variables.syngas.unit}`}
-                    />
-                  </div>
-                  <div className="overlay-anchor top-mid">
-                    <OverlayMetric label="공기비 (λ)" value={state.metrics.lambda.toFixed(2)} />
-                  </div>
-                  <div className="overlay-anchor top-right-left">
-                    <OverlayMetric label="배기온도" value={`${state.metrics.exhaust.toFixed(1)} °C`} caution />
-                  </div>
-                  <div className="overlay-anchor top-right">
-                    <OverlayMetric label="일산화탄소 (CO)" value={`${state.metrics.co.toFixed(1)} ppm`} />
-                  </div>
-                  <div className="overlay-anchor right-mid">
-                    <OverlayMetric label="NOx" value={`${displayedNox.toFixed(1)} ppm`} primary />
-                  </div>
-                  <div className="overlay-anchor bottom-left">
-                    <OverlayMetric
-                      label={state.variables.n2.shortLabel}
-                      value={`${formatValue(state.variables.n2.value, state.variables.n2.digits)} ${state.variables.n2.unit}`}
-                    />
-                  </div>
-                  <div className="overlay-anchor bottom-mid-left">
-                    <OverlayMetric
-                      label={state.variables.load.shortLabel}
-                      value={`${formatValue(state.variables.load.value, state.variables.load.digits)} ${state.variables.load.unit}`}
-                    />
-                  </div>
-                  <div className="overlay-anchor bottom-mid-right">
-                    <OverlayMetric label="발전량" value={`${state.metrics.power.toFixed(1)} MW`} />
-                  </div>
-                </div>
-              ) : null}
+            <div className="plant-body" style={{ height: 500 }}>
+              <HmiMonitor
+                sg={state.variables.syngas.value}
+                n2={state.variables.n2.value}
+                igv={state.variables.load.value}
+                nox={displayedNox}
+                co={state.metrics.co}
+                exhaust={state.metrics.exhaust}
+                lambda={state.metrics.lambda}
+                power={state.metrics.power}
+              />
             </div>
           </section>
 
@@ -683,63 +644,6 @@ function MultiChart({ history }: { history: MetricPoint[] }) {
   )
 }
 
-function PlantDiagram({ n2Label }: { n2Label: string }) {
-  return (
-    <svg className="plant-svg" viewBox="0 0 900 330" preserveAspectRatio="xMidYMid meet">
-      <rect x="68" y="146" width="110" height="38" rx="7" className="plant-node" />
-      <text x="123" y="169" textAnchor="middle" className="plant-text">
-        연료 공급
-      </text>
-      <rect x="248" y="131" width="170" height="68" rx="8" className="plant-node active" />
-      <text x="333" y="160" textAnchor="middle" className="plant-text active">
-        합성가스
-      </text>
-      <text x="333" y="178" textAnchor="middle" className="plant-text active">
-        반응기
-      </text>
-      <circle cx="520" cy="165" r="46" className="plant-node" />
-      <text x="520" y="162" textAnchor="middle" className="plant-text">
-        가스
-      </text>
-      <text x="520" y="176" textAnchor="middle" className="plant-text">
-        터빈
-      </text>
-      <rect x="652" y="146" width="116" height="38" rx="7" className="plant-node" />
-      <text x="710" y="169" textAnchor="middle" className="plant-text">
-        배기 라인
-      </text>
-      <rect x="272" y="276" width="122" height="28" rx="5" className="plant-node secondary" />
-      <text x="333" y="293" textAnchor="middle" className="plant-text secondary">
-        {n2Label}
-      </text>
-    </svg>
-  )
-}
-
-function OverlayMetric({
-  label,
-  value,
-  caution,
-  primary,
-}: {
-  label: string
-  value: string
-  caution?: boolean
-  primary?: boolean
-}) {
-  const className = primary ? 'overlay-metric primary' : caution ? 'overlay-metric caution' : 'overlay-metric'
-
-  return (
-    <div className={className}>
-      <div className="overlay-metric-label">{label}</div>
-      <div className={caution ? 'overlay-metric-value caution-text' : primary ? 'overlay-metric-value primary-text' : 'overlay-metric-value'}>
-        <span className={caution ? 'overlay-metric-dot caution' : primary ? 'overlay-metric-dot primary' : 'overlay-metric-dot'} />
-        {value}
-      </div>
-    </div>
-  )
-}
-
 function ChartPlaceholder({ width, height }: { width: number; height: number }) {
   return (
     <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
@@ -840,20 +744,6 @@ function streamStatusLabel(status: StreamStatus): { text: string; tone: string }
   }
 }
 
-function EyeIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M2.5 12s3.5-6 9.5-6s9.5 6 9.5 6s-3.5 6-9.5 6s-9.5-6-9.5-6Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-      />
-      <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" strokeWidth="1.5" />
-    </svg>
-  )
-}
-
 function ArrowDownIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -889,6 +779,317 @@ function CloseIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" strokeWidth="1.6" />
+    </svg>
+  )
+}
+
+// ── NOxO 디자인 토큰 ──────────────────────────────────────
+const C = {
+  bg:      '#0b0f14',
+  surf:    '#11161d',
+  surf2:   '#161d26',
+  surf3:   '#1c242f',
+  line:    'rgba(255,255,255,0.10)',
+  lineS:   'rgba(255,255,255,0.18)',
+  t2:      'rgba(255,255,255,0.58)',
+  t3:      'rgba(255,255,255,0.28)',
+  blue:    '#3b82f6',
+  blueBg:  'rgba(59,130,246,0.09)',
+  green:   '#10b981',
+  greenBg: 'rgba(16,185,129,0.08)',
+  amber:   '#f59e0b',
+  red:     '#ef4444',
+} as const
+
+type HmiProps = {
+  sg: number; n2: number; igv: number
+  nox: number; co: number; exhaust: number; lambda: number; power: number
+}
+
+function HmiMonitor({ igv, lambda }: HmiProps) {
+  const M = "'JetBrains Mono',monospace"
+
+  return (
+    <svg
+      viewBox="255 155 760 400"
+      width="100%" height="100%"
+      style={{ display: 'block', background: C.bg }}
+      preserveAspectRatio="xMidYMid meet"
+    >
+      <defs>
+        <linearGradient id="hPink"  x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%"   stopColor="#f472b6"/>
+          <stop offset="40%"  stopColor="#ec4899"/>
+          <stop offset="100%" stopColor="#9d174d"/>
+        </linearGradient>
+        <linearGradient id="hOlive" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%"   stopColor="#a3e635"/>
+          <stop offset="40%"  stopColor="#84cc16"/>
+          <stop offset="100%" stopColor="#3f6212"/>
+        </linearGradient>
+        <linearGradient id="hAmber" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%"   stopColor="#fbbf24"/>
+          <stop offset="40%"  stopColor="#f59e0b"/>
+          <stop offset="100%" stopColor="#78350f"/>
+        </linearGradient>
+        <linearGradient id="hBlue"  x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%"   stopColor="#60a5fa"/>
+          <stop offset="50%"  stopColor="#3b82f6"/>
+          <stop offset="100%" stopColor="#1d4ed8"/>
+        </linearGradient>
+        <linearGradient id="hTurb"  x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%"   stopColor="#1e293b"/>
+          <stop offset="60%"  stopColor="#0f172a"/>
+          <stop offset="100%" stopColor="#0a1120"/>
+        </linearGradient>
+        <radialGradient id="hCan" cx="35%" cy="35%">
+          <stop offset="0%"   stopColor="#fbbf24"/>
+          <stop offset="45%"  stopColor="#ef4444"/>
+          <stop offset="100%" stopColor="#7f1d1d"/>
+        </radialGradient>
+        {/* 터빈 전체 외곽 클립 */}
+        <clipPath id="turbClip">
+          <polygon points="658,255 910,265 910,405 658,415"/>
+        </clipPath>
+        {/* 섹션별 클립 */}
+        <clipPath id="compClip">
+          <polygon points="658,255 754,258 754,412 658,415"/>
+        </clipPath>
+        <clipPath id="combClip">
+          <polygon points="754,258 840,261 840,409 754,412"/>
+        </clipPath>
+        <clipPath id="turbineClip">
+          <polygon points="840,261 910,265 910,405 840,409"/>
+        </clipPath>
+        <style>{`
+          @keyframes flowR  { from{stroke-dashoffset:28}  to{stroke-dashoffset:0}  }
+          @keyframes flowUp { from{stroke-dashoffset:18}  to{stroke-dashoffset:0}  }
+          @keyframes compR  { from{transform:translateX(0px)} to{transform:translateX(20px)}  }
+          @keyframes turbR  { from{transform:translateX(0px)} to{transform:translateX(-24px)} }
+          @keyframes combFl { 0%,100%{opacity:.15} 50%{opacity:1}   }
+          @keyframes combRg { 0%,100%{opacity:.1}  50%{opacity:.95} }
+          @keyframes exhF   { 0%{opacity:.9;transform:translateX(0)} 100%{opacity:0;transform:translateX(70px)} }
+          .comp-blade-group { animation: compR 0.38s linear infinite; }
+          .turb-blade-group { animation: turbR 0.28s linear infinite; }
+          .comb-core  { transform-box:fill-box; transform-origin:center; animation:combFl 0.7s ease-in-out infinite; }
+          .comb-ring  { transform-box:fill-box; transform-origin:center; animation:combRg 0.7s ease-in-out infinite; }
+          .comb-core-b{ transform-box:fill-box; transform-origin:center; animation:combFl 0.7s ease-in-out 0.35s infinite; }
+          .comb-ring-b{ transform-box:fill-box; transform-origin:center; animation:combRg 0.7s ease-in-out 0.35s infinite; }
+          .flow-r  { stroke-dasharray:14 8; animation:flowR  0.4s linear infinite; }
+          .flow-up { stroke-dasharray:8 6;  animation:flowUp 0.38s linear infinite; }
+          .exh-f   { transform-box:fill-box; transform-origin:left center; animation:exhF 0.75s linear infinite; }
+        `}</style>
+      </defs>
+
+      <rect width="1456" height="640" fill={C.bg}/>
+
+      {/* SYNGAS 메인 배관 — y=245, 터빈 상부 연결 */}
+      <rect x="273" y="245" width="440" height="12" fill="url(#hPink)" rx="2"/>
+      <rect x="273" y="246" width="440" height="4" fill="#f9a8d4" opacity=".25"/>
+      <g transform="translate(305,241)">
+        <polygon points="0,0 20,10 0,20" fill={C.green} stroke="#064e3b" strokeWidth="1.2"/>
+        <polygon points="20,0 0,10 20,20" fill={C.green} stroke="#064e3b" strokeWidth="1.2"/>
+        <line x1="10" y1="0" x2="10" y2="-7" stroke="#064e3b" strokeWidth="1.5"/>
+        <line x1="10" y1="20" x2="10" y2="27" stroke="#064e3b" strokeWidth="1.5"/>
+        <text x="10" y="-10" fontSize="8" textAnchor="middle" fill={C.t3}>VS4-11</text>
+      </g>
+      <g transform="translate(380,241)">
+        <polygon points="0,0 20,10 0,20" fill={C.green} stroke="#064e3b" strokeWidth="1.2"/>
+        <polygon points="20,0 0,10 20,20" fill={C.green} stroke="#064e3b" strokeWidth="1.2"/>
+        <line x1="10" y1="0" x2="10" y2="-7" stroke="#064e3b" strokeWidth="1.5"/>
+        <line x1="10" y1="20" x2="10" y2="27" stroke="#064e3b" strokeWidth="1.5"/>
+        <text x="10" y="-10" fontSize="8" textAnchor="middle" fill={C.t3}>VSR-11</text>
+      </g>
+      <circle cx="470" cy="251" r="8" fill={C.surf3} stroke={C.lineS} strokeWidth="1"/>
+      <rect x="446" y="221" width="82" height="22" rx="3" fill={C.surf2} stroke={C.line}/>
+      <text x="487" y="231" fontSize="7" fontWeight="700" textAnchor="middle" fill={C.t3}>FPSG2</text>
+      <text x="487" y="240" fontSize="8" fontWeight="600" textAnchor="middle" fill={C.blue} fontFamily={M}>27.0 kg/cm²</text>
+      <line x1="487" y1="243" x2="470" y2="251" stroke={C.line} strokeWidth="1"/>
+      <g transform="translate(548,241)">
+        <polygon points="0,0 20,10 0,20" fill={C.red} stroke="#7f1d1d" strokeWidth="1.2"/>
+        <polygon points="20,0 0,10 20,20" fill={C.red} stroke="#7f1d1d" strokeWidth="1.2"/>
+        <text x="10" y="-3" fontSize="7" textAnchor="middle" fill={C.t3}>VGC-11A</text>
+      </g>
+      <rect x="526" y="267" width="72" height="22" rx="3" fill={C.surf2} stroke={C.line}/>
+      <text x="562" y="277" fontSize="7" textAnchor="middle" fill={C.t3}>DM 45.9 %</text>
+      <text x="562" y="287" fontSize="7" textAnchor="middle" fill={C.t3}>FB 45.9 %</text>
+      {/* SYNGAS 루프 — 루프 상단 y=195 */}
+      <rect x="600" y="195" width="12" height="50" fill="url(#hPink)"/>
+      <rect x="600" y="195" width="220" height="12" fill="url(#hPink)"/>
+      <rect x="808" y="195" width="12" height="50" fill="url(#hPink)"/>
+      <rect x="713" y="245" width="107" height="12" fill="url(#hPink)"/>
+      <rect x="713" y="246" width="107" height="4" fill="#f9a8d4" opacity=".25"/>
+      <g transform="translate(596,200) rotate(90)">
+        <polygon points="0,0 16,8 0,16" fill={C.red} stroke="#7f1d1d" strokeWidth="1.2"/>
+        <polygon points="16,0 0,8 16,16" fill={C.red} stroke="#7f1d1d" strokeWidth="1.2"/>
+      </g>
+      <rect x="556" y="175" width="70" height="20" rx="3" fill={C.surf2} stroke={C.line}/>
+      <text x="591" y="185" fontSize="7" textAnchor="middle" fill={C.t3}>VGC-11</text>
+      <text x="591" y="193" fontSize="7" textAnchor="middle" fill={C.blue} fontFamily={M}>DM 76.0%</text>
+      <g transform="translate(804,200) rotate(90)">
+        <polygon points="0,0 16,8 0,16" fill={C.red} stroke="#7f1d1d" strokeWidth="1.2"/>
+        <polygon points="16,0 0,8 16,16" fill={C.red} stroke="#7f1d1d" strokeWidth="1.2"/>
+      </g>
+      <rect x="812" y="175" width="58" height="20" rx="3" fill={C.surf2} stroke={C.line}/>
+      <text x="841" y="185" fontSize="7" textAnchor="middle" fill={C.t3}>VGC-12</text>
+      <circle cx="760" cy="251" r="8" fill={C.surf3} stroke={C.lineS} strokeWidth="1"/>
+      <rect x="730" y="265" width="80" height="20" rx="3" fill={C.surf2} stroke={C.line}/>
+      <text x="770" y="274" fontSize="7" textAnchor="middle" fill={C.t3}>FPG 3</text>
+      <text x="770" y="282" fontSize="8" fontWeight="600" textAnchor="middle" fill={C.blue} fontFamily={M}>15.7 kg/cm²</text>
+      <circle cx="870" cy="251" r="9" fill={C.surf3} stroke={C.lineS} strokeWidth="1"/>
+      <text x="870" y="255" fontSize="8" fontWeight="700" textAnchor="middle" fill={C.t2}>10</text>
+
+      {/* N2 배관 — y=400, 터빈 하부 연결 */}
+      <rect x="273" y="400" width="440" height="12" fill="url(#hOlive)" rx="2"/>
+      <rect x="273" y="401" width="440" height="4" fill="#bef264" opacity=".2"/>
+      <g transform="translate(305,396)">
+        <polygon points="0,0 20,10 0,20" fill={C.green} stroke="#064e3b" strokeWidth="1.2"/>
+        <polygon points="20,0 0,10 20,20" fill={C.green} stroke="#064e3b" strokeWidth="1.2"/>
+        <line x1="10" y1="0" x2="10" y2="-7" stroke="#064e3b" strokeWidth="1.5"/>
+        <line x1="10" y1="20" x2="10" y2="27" stroke="#064e3b" strokeWidth="1.5"/>
+        <text x="10" y="-10" fontSize="8" textAnchor="middle" fill={C.t3}>VS4-1</text>
+      </g>
+      <g transform="translate(380,396)">
+        <polygon points="0,0 20,10 0,20" fill={C.green} stroke="#064e3b" strokeWidth="1.2"/>
+        <polygon points="20,0 0,10 20,20" fill={C.green} stroke="#064e3b" strokeWidth="1.2"/>
+        <line x1="10" y1="0" x2="10" y2="-7" stroke="#064e3b" strokeWidth="1.5"/>
+        <line x1="10" y1="20" x2="10" y2="27" stroke="#064e3b" strokeWidth="1.5"/>
+        <text x="10" y="-10" fontSize="8" textAnchor="middle" fill={C.t3}>VSR-1</text>
+      </g>
+      <circle cx="466" cy="406" r="8" fill={C.surf3} stroke={C.lineS} strokeWidth="1"/>
+      <rect x="440" y="420" width="68" height="20" rx="3" fill={C.surf2} stroke={C.line}/>
+      <text x="474" y="429" fontSize="7" textAnchor="middle" fill={C.t3}>FPG2</text>
+      <text x="474" y="437" fontSize="8" fontWeight="600" textAnchor="middle" fill={C.blue} fontFamily={M}>0.0 kg/cm²</text>
+      <g transform="translate(516,396)">
+        <polygon points="0,0 20,10 0,20" fill={C.red} stroke="#7f1d1d" strokeWidth="1.2"/>
+        <polygon points="20,0 0,10 20,20" fill={C.red} stroke="#7f1d1d" strokeWidth="1.2"/>
+        <text x="10" y="-3" fontSize="7" textAnchor="middle" fill={C.t3}>VGC-1</text>
+      </g>
+      <rect x="500" y="420" width="72" height="20" rx="3" fill={C.surf2} stroke={C.line}/>
+      <text x="536" y="429" fontSize="7" textAnchor="middle" fill={C.t3}>DM -25.0%</text>
+      <text x="536" y="437" fontSize="7" textAnchor="middle" fill={C.t3}>FB  0.1%</text>
+
+      {/* 인렛 덕트 + IGV */}
+      <rect x="580" y="237" width="78" height="196" fill={C.surf3} stroke={C.line} strokeWidth="1" rx="2"/>
+      <text x="619" y="260" fontSize="8" fontWeight="600" textAnchor="middle" fill={C.t3} letterSpacing="0.06em">INLET</text>
+      <line x1="582" y1="265" x2="656" y2="265" stroke={C.line} strokeWidth="1"/>
+      <text x="619" y="278" fontSize="9" fontWeight="700" textAnchor="middle" fill={C.blue} fontFamily={M}>53.0 mmH₂O</text>
+      <text x="619" y="291" fontSize="8" textAnchor="middle" fill={C.t2}>30.1 °C</text>
+      <text x="619" y="304" fontSize="8" textAnchor="middle" fill={C.t2}>755.2 mmHg</text>
+      <line x1="582" y1="395" x2="656" y2="395" stroke={C.line} strokeWidth="1"/>
+      <text x="619" y="408" fontSize="8" fontWeight="600" textAnchor="middle" fill={C.t3} letterSpacing="0.06em">IGV</text>
+      <text x="619" y="421" fontSize="10" fontWeight="700" textAnchor="middle" fill={C.blue} fontFamily={M}>{igv.toFixed(1)} %</text>
+
+      {/* ── 가스터빈 본체: 2D 사이드 단면 스케매틱 ── */}
+
+      {/* 외곽 */}
+      <polygon points="658,255 910,265 910,405 658,415" fill="#0a1524" stroke={C.lineS} strokeWidth="2"/>
+
+      {/* 압축기 섹션 */}
+      <rect x="658" y="240" width="96" height="180" fill="#0d1e38" clipPath="url(#compClip)"/>
+
+      {/* 연소기 섹션: 어두운 배경 */}
+      <rect x="754" y="240" width="90" height="180" fill="#1c0d18" clipPath="url(#combClip)"/>
+
+      {/* 터빈 섹션 */}
+      <rect x="840" y="240" width="75" height="180" fill="#1a1005" clipPath="url(#turbineClip)"/>
+
+      {/* 섹션 구분선 */}
+      <line x1="754" y1="258" x2="754" y2="412" stroke={C.lineS} strokeWidth="2"/>
+      <line x1="840" y1="261" x2="840" y2="409" stroke={C.lineS} strokeWidth="2"/>
+
+      {/* 섹션 레이블 */}
+      <text x="706" y="272" fontSize="8" fontWeight="600" textAnchor="middle" fill={C.t3} letterSpacing=".08em">COMP</text>
+      <text x="797" y="272" fontSize="8" fontWeight="600" textAnchor="middle" fill={C.t3} letterSpacing=".08em">COMB</text>
+      <text x="875" y="273" fontSize="8" fontWeight="600" textAnchor="middle" fill={C.t3} letterSpacing=".08em">TURB</text>
+
+      {/* 로터 샤프트 */}
+      <rect x="658" y="331" width="252" height="8" rx="2" fill="#1a2a42" stroke={C.lineS} strokeWidth="1.5"/>
+
+      {/* 연소캔 A — 애니메이션 연소 심볼 */}
+      <circle cx="797" cy="300" r="24" fill="#250810" stroke="#7f1d1d" strokeWidth="1.5"/>
+      <circle cx="797" cy="300" r="13" className="comb-ring"   fill="#3d1010" stroke="#b22222" strokeWidth="1"/>
+      <circle cx="797" cy="300" r="5"  className="comb-core"   fill="#fb923c" opacity=".9"/>
+      <text x="797" y="330" fontSize="7" fontWeight="600" textAnchor="middle" fill={C.t3}>CC-A</text>
+
+      {/* 연소캔 B */}
+      <circle cx="797" cy="370" r="24" fill="#250810" stroke="#7f1d1d" strokeWidth="1.5"/>
+      <circle cx="797" cy="370" r="13" className="comb-ring-b" fill="#3d1010" stroke="#b22222" strokeWidth="1"/>
+      <circle cx="797" cy="370" r="5"  className="comb-core-b" fill="#fb923c" opacity=".9"/>
+      <text x="797" y="398" fontSize="7" fontWeight="600" textAnchor="middle" fill={C.t3}>CC-B</text>
+
+      {/* CPD 센서 */}
+      <circle cx="754" cy="262" r="7" fill={C.surf2} stroke={C.lineS} strokeWidth="1"/>
+      <text x="754" y="266" fontSize="7" fontWeight="700" textAnchor="middle" fill={C.t2}>16</text>
+      <rect x="762" y="254" width="86" height="16" rx="3" fill={C.surf2} stroke={C.line}/>
+      <text x="805" y="265" fontSize="7" textAnchor="middle" fill={C.t3}>CPD  13.1 kg/cm²</text>
+
+      {/* CTD 센서 */}
+      <circle cx="840" cy="408" r="7" fill={C.surf2} stroke={C.lineS} strokeWidth="1"/>
+      <text x="840" y="412" fontSize="7" fontWeight="700" textAnchor="middle" fill={C.t2}>17</text>
+      <rect x="848" y="400" width="72" height="16" rx="3" fill={C.surf2} stroke={C.line}/>
+      <text x="884" y="411" fontSize="7" textAnchor="middle" fill={C.t3}>CTD</text>
+      <text x="884" y="413" fontSize="8" fontWeight="600" textAnchor="middle" fill={C.amber} fontFamily={M}>391.5 °C</text>
+
+      {/* λ 박스 */}
+      <rect x="730" y="424" width="108" height="22" rx="4" fill={C.blueBg} stroke="rgba(59,130,246,0.35)" strokeWidth="1"/>
+      <text x="784" y="439" fontSize="12" fontWeight="700" textAnchor="middle" fill={C.blue} fontFamily={M}>λ = {lambda.toFixed(2)}</text>
+
+      {/* CBV */}
+      {([[244,'CBV#1 CLSD'],[264,'CBV#3 CLSD'],[400,'CBV#4 CLSD'],[420,'CBV#2 CLSD']] as [number,string][]).map(([y,l])=>(
+        <g key={l}>
+          <rect x="916" y={y} width="78" height="16" rx="3" fill={C.greenBg} stroke="rgba(16,185,129,0.3)" strokeWidth="1"/>
+          <text x="955" y={y+11} fontSize="8" textAnchor="middle" fill={C.green} fontFamily={M}>{l}</text>
+        </g>
+      ))}
+
+      {/* N2 하단 배관 */}
+      <rect x="273" y="510" width="450" height="12" fill="url(#hAmber)" rx="2"/>
+      <rect x="273" y="511" width="450" height="4" fill="#fde68a" opacity=".2"/>
+      <g transform="translate(390,506)">
+        <polygon points="0,0 20,10 0,20" fill={C.green} stroke="#064e3b" strokeWidth="1.2"/>
+        <polygon points="20,0 0,10 20,20" fill={C.green} stroke="#064e3b" strokeWidth="1.2"/>
+        <text x="10" y="-3" fontSize="8" textAnchor="middle" fill={C.t3}>VS3-1</text>
+      </g>
+      <g transform="translate(540,506)">
+        <polygon points="0,0 20,10 0,20" fill={C.green} stroke="#064e3b" strokeWidth="1.2"/>
+        <polygon points="20,0 0,10 20,20" fill={C.green} stroke="#064e3b" strokeWidth="1.2"/>
+        <text x="10" y="-3" fontSize="8" textAnchor="middle" fill={C.t3}>VA4-1</text>
+      </g>
+      <rect x="717" y="433" width="12" height="77" fill="url(#hAmber)" rx="2"/>
+      <circle cx="723" cy="456" r="8" fill={C.surf2} stroke={C.lineS} strokeWidth="1"/>
+      <text x="723" y="460" fontSize="7" fontWeight="700" textAnchor="middle" fill={C.t2}>18</text>
+      <rect x="688" y="464" width="106" height="26" rx="3" fill={C.surf2} stroke={C.line}/>
+      <text x="741" y="474" fontSize="7" textAnchor="middle" fill={C.t3}>IBH  DM -25.0%</text>
+      <text x="741" y="483" fontSize="7" textAnchor="middle" fill={C.t3}>FB  0.2%</text>
+
+      {/* ── 흐름 애니메이션 오버레이 (보색) ── */}
+      {/* SYNGAS 흐름 — 분홍 배관의 보색: 시안 */}
+      <line x1="273" y1="251" x2="658" y2="251"
+        stroke="#00e5ff" strokeWidth="4" strokeOpacity=".95" className="flow-r"/>
+      {/* SYNGAS 루프 상단 흐름 */}
+      <line x1="612" y1="201" x2="812" y2="201"
+        stroke="#00e5ff" strokeWidth="4" strokeOpacity=".9" className="flow-r"
+        style={{animationDuration:'0.35s'}}/>
+      {/* N2 흐름 — 라임 배관의 보색: 바이올렛 */}
+      <line x1="273" y1="406" x2="658" y2="406"
+        stroke="#c084fc" strokeWidth="4" strokeOpacity=".95" className="flow-r"
+        style={{animationDuration:'0.5s'}}/>
+      {/* N2 하단 앰버 흐름 — 앰버 배관의 보색: 스카이블루 */}
+      <line x1="273" y1="516" x2="717" y2="516"
+        stroke="#38bdf8" strokeWidth="4" strokeOpacity=".95" className="flow-r"
+        style={{animationDuration:'0.55s'}}/>
+      {/* 수직 앰버 흐름 (↑ 상향) */}
+      <line x1="723" y1="510" x2="723" y2="433"
+        stroke="#38bdf8" strokeWidth="4" strokeOpacity=".95" className="flow-up"
+        style={{animationDuration:'0.38s'}}/>
+      {/* 배기 흐름 (→ 우측 배출) */}
+      {([278,293,308,323,338,353,368,383,398] as number[]).map((y,i)=>(
+        <line key={i} x1="912" y1={y} x2="980" y2={y}
+          stroke="#f87171" strokeWidth="3" strokeOpacity=".9"
+          className="exh-f"
+          style={{animationDelay:`${(i*0.08).toFixed(2)}s`, animationDuration:'0.72s'}}/>
+      ))}
     </svg>
   )
 }
