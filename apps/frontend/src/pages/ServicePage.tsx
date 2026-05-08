@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useState, type ChangeEvent } from 'react'
 import { useOutletContext } from 'react-router-dom'
-import hmiConceptC from '../assets/hmi-concept-c.png'
+import { HmiMonitor } from '../features/dashboard/HmiMonitor'
 import {
   CONTROL_VARIABLE_KEYS,
   NOX_LIMIT,
   POWER_RAW_NAME,
   PRIMARY_VARIABLE_KEYS,
   type MetricPoint,
-  type VariableConfig,
   type VariableConfigUpdate,
   type VariableKey,
   variableSeed,
@@ -785,39 +784,3 @@ function CloseIcon() {
   )
 }
 
-type HmiProps = {
-  controls: Record<VariableKey, VariableConfig>
-  nox: number
-  exhaust: number
-  lambda: number
-  power: number
-}
-
-function HmiMonitor(_: HmiProps) {
-  return (
-    <div
-      style={{
-        width: '100%',
-        height: '100%',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '0',
-        overflow: 'hidden',
-        background:
-          'radial-gradient(circle at top, rgba(59,130,246,0.08), transparent 28%), linear-gradient(180deg, #0b1118 0%, #081018 100%)',
-      }}
-    >
-      <img
-        src={hmiConceptC}
-        alt="컨셉 보드 C안 기반 공정 모니터링 도면"
-        style={{
-          width: '100%',
-          height: '100%',
-          display: 'block',
-          objectFit: 'fill',
-        }}
-      />
-    </div>
-  )
-}
