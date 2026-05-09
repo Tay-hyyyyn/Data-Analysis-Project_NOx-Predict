@@ -16,3 +16,8 @@ export function lerp(a: number, b: number, t: number): number {
 export function finiteOr(value: number | undefined, fallback: number): number {
   return Number.isFinite(value) ? (value as number) : fallback
 }
+
+export function formatKpi(value: number, fractionDigits: number): string {
+  if (!Number.isFinite(value)) return '--'
+  return value.toFixed(fractionDigits)
+}

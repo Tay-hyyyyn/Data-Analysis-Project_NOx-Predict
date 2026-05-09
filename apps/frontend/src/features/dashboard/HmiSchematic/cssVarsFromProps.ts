@@ -70,6 +70,7 @@ export function cssVarsFromProps(inputs: SchematicInputs): Record<string, string
     '--flame-scale':    lerp(0.85, 1.15, ttxmR),
     '--flame-opacity':  lerp(0.55, 1.0, ttxmR),
     '--flame-hue':      lerp(45, 12, ttxmR),
+    '--flame-intensity': clamp(synR, 0, 1),
     '--smoke-opacity':  lerp(0, 0.85, smokeRatio),
     '--smoke-drift':    lerp(8, 3, noxR),
     '--smoke-tint':     lerp(0, 0.6, noxR),

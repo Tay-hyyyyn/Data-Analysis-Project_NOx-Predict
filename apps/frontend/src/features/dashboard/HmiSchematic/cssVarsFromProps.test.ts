@@ -59,6 +59,14 @@ describe('cssVarsFromProps — flame', () => {
   it('TTXM 580°C이면 scale은 0.85', () => {
     expect(getVar(cssVarsFromProps({ ...baseInputs, ttxm: 580 }), '--flame-scale')).toBeCloseTo(0.85, 5)
   })
+  it('--flame-intensity는 syngasFlow 정규화 값 (0~1)', () => {
+    const v0 = cssVarsFromProps({ ...baseInputs, syngasFlow: vc(800, 800, 2200) })
+    expect(v0['--flame-intensity']).toBe(0)
+    const vMid = cssVarsFromProps({ ...baseInputs, syngasFlow: vc(1500, 800, 2200) })
+    expect(vMid['--flame-intensity']).toBe(0.5)
+    const vMax = cssVarsFromProps({ ...baseInputs, syngasFlow: vc(2200, 800, 2200) })
+    expect(vMax['--flame-intensity']).toBe(1)
+  })
 })
 
 describe('cssVarsFromProps — smoke (NOx threshold 0.6)', () => {

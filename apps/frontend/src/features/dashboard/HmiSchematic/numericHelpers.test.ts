@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { clamp, lerp, normalize, finiteOr } from './numericHelpers'
+import { clamp, lerp, normalize, finiteOr, formatKpi } from './numericHelpers'
 
 describe('clamp', () => {
   it('범위 안의 값은 그대로', () => expect(clamp(5, 0, 10)).toBe(5))
@@ -25,4 +25,18 @@ describe('finiteOr', () => {
   it('NaN은 fallback', () => expect(finiteOr(NaN, 0)).toBe(0))
   it('Infinity는 fallback', () => expect(finiteOr(Infinity, -1)).toBe(-1))
   it('undefined는 fallback', () => expect(finiteOr(undefined, 7)).toBe(7))
+})
+
+describe('formatKpi', () => {
+  it('유한 숫자는 toFixed로 포맷', () => {
+    expect(formatKpi(26.5, 1)).toBe('26.5')
+    expect(formatKpi(580, 1)).toBe('580.0')
+    expect(formatKpi(1.1, 2)).toBe('1.10')
+  })
+
+  it('NaN/Infinity → "--"', () => {
+    expect(formatKpi(NaN, 1)).toBe('--')
+    expect(formatKpi(Infinity, 1)).toBe('--')
+    expect(formatKpi(-Infinity, 1)).toBe('--')
+  })
 })
