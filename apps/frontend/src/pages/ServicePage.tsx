@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type ChangeEvent } from 'react'
 import { useOutletContext } from 'react-router-dom'
-import { HmiMonitor } from '../features/dashboard/HmiMonitor'
+import { HmiSchematic } from '../features/dashboard/HmiSchematic/HmiSchematic'
 import {
   CONTROL_VARIABLE_KEYS,
   NOX_LIMIT,
@@ -117,10 +117,10 @@ export function ServicePage() {
               </div>
             </header>
             <div className="plant-body" style={{ height: 500 }}>
-              <HmiMonitor
-                controls={state.variables}
+              <HmiSchematic
+                {...state.variables}
                 nox={displayedNox}
-                exhaust={state.metrics.exhaust}
+                ttxm={state.metrics.exhaust}
                 lambda={state.metrics.lambda}
                 power={state.metrics.power}
               />
