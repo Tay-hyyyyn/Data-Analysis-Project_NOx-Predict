@@ -1,0 +1,9 @@
+/* placeholder — Task 14에서 채워짐 */
+.kpiTexts text {
+  font-family: 'Inter', 'Pretendard', -apple-system, sans-serif;
+  font-size: 28px;
+  font-weight: 600;
+  fill: #E8F1F8;
+  font-variant-numeric: tabular-nums;
+  dominant-baseline: alphabetic;
+}
