@@ -6,6 +6,7 @@ import {
   NOX_LIMIT,
   POWER_RAW_NAME,
   PRIMARY_VARIABLE_KEYS,
+  SECONDARY_VARIABLE_KEYS,
   type MetricPoint,
   type VariableConfigUpdate,
   type VariableKey,
@@ -16,6 +17,7 @@ import type { AppOutletContext } from '../app/App'
 
 const controlVariableOrder: VariableKey[] = CONTROL_VARIABLE_KEYS
 const overviewVariableOrder: VariableKey[] = PRIMARY_VARIABLE_KEYS
+const secondaryVariableOrder: VariableKey[] = SECONDARY_VARIABLE_KEYS
 const POWER_LIMIT = 240
 
 export function ServicePage() {
@@ -41,6 +43,7 @@ export function ServicePage() {
   const streamLabel = streamStatusLabel(status)
   const noxStatus = displayedNox > NOX_LIMIT ? '위험' : streamLabel.text
   const controlCards = overviewVariableOrder.map((key) => state.variables[key])
+  const secondaryCards = secondaryVariableOrder.map((key) => state.variables[key])
   const noxValues = state.history.length > 0 ? state.history.map((point) => point.nox) : [displayedNox]
   const powerValues = state.history.length > 0 ? state.history.map((point) => point.power) : [state.metrics.power]
   const noxHeadroom = NOX_LIMIT - displayedNox
@@ -110,6 +113,18 @@ export function ServicePage() {
             ))}
           </div>
 
+          <div className="kpi-row kpi-row-secondary">
+            {secondaryCards.map((variable) => (
+              <KpiCardMini
+                key={variable.key}
+                title={variable.shortLabel}
+                value={variable.value}
+                unit={variable.unit}
+                digits={variable.digits}
+              />
+            ))}
+          </div>
+
           <section className="panel plant-card">
             <header className="panel-header">
               <div className="panel-header-left">
@@ -129,7 +144,7 @@ export function ServicePage() {
           </section>
 
           <div className="chart-row">
-            <section className="panel chart-card nox-glow">
+            <section className="panel chart-card">
               <header className="chart-header">
                 <div>
                   <div className="chart-title">NOx 시계열</div>
@@ -193,18 +208,17 @@ export function ServicePage() {
         <aside className="sidebar">
           <div className="sidebar-section">
             <div className="sidebar-title">제어 변수 선택</div>
-            <div className="chip-row">
+            <select
+              className="control-select mono"
+              value={state.activeVar}
+              onChange={(event) => setActiveVar(event.target.value as VariableKey)}
+            >
               {controlVariableOrder.map((key) => (
-                <button
-                  key={key}
-                  type="button"
-                  className={state.activeVar === key ? 'chip active' : 'chip'}
-                  onClick={() => setActiveVar(key)}
-                >
+                <option key={key} value={key}>
                   {state.variables[key].shortLabel}
-                </button>
+                </option>
               ))}
-            </div>
+            </select>
           </div>
 
           <div className="sidebar-section">
@@ -467,6 +481,36 @@ function KpiCard({
           <span className="kpi-decimal">.{decimal}</span>
         </div>
         <div className="kpi-subtitle">{subtitle ?? unit}</div>
+      </div>
+    </section>
+  )
+}
+
+function KpiCardMini({
+  title,
+  value,
+  unit,
+  digits = 1,
+}: {
+  title: string
+  value: number
+  unit: string
+  digits?: number
+}) {
+  const [integer, decimal = '0'] = value.toFixed(digits).split('.')
+
+  return (
+    <section className="kpi-card kpi-card-mini">
+      <div className="kpi-mini-header">
+        <div className="kpi-mini-name">{title}</div>
+        <span className={statusClass('제어')}>제어</span>
+      </div>
+      <div className="kpi-mini-value-row">
+        <div className="kpi-mini-value">
+          {integer}
+          <span className="kpi-mini-decimal">.{decimal}</span>
+        </div>
+        <div className="kpi-mini-unit">{unit}</div>
       </div>
     </section>
   )

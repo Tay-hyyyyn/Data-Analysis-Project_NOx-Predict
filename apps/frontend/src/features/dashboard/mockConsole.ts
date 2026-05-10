@@ -108,6 +108,15 @@ export const PRIMARY_VARIABLE_KEYS: VariableKey[] = [
   'n2Offset',
   'igvOpening',
 ]
+export const SECONDARY_VARIABLE_KEYS: VariableKey[] = [
+  'syngasSrv',
+  'syngasGcv1',
+  'syngasGcv1a',
+  'syngasGcv2',
+  'n2Valve1',
+  'n2Flow',
+  'ibhValve',
+]
 
 export const variableSeed: Record<VariableKey, VariableConfig> = {
   syngasFlow: {
