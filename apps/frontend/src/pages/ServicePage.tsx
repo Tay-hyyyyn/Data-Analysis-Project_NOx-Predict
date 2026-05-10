@@ -3,22 +3,27 @@ import { useOutletContext } from 'react-router-dom'
 import { HmiSchematic } from '../features/dashboard/HmiSchematic/HmiSchematic'
 import {
   CONTROL_VARIABLE_KEYS,
-  NOX_LIMIT,
-  POWER_RAW_NAME,
   PRIMARY_VARIABLE_KEYS,
   SECONDARY_VARIABLE_KEYS,
+  type ConsoleMetrics,
   type MetricPoint,
   type VariableConfigUpdate,
   type VariableKey,
   variableSeed,
 } from '../features/dashboard/mockConsole'
 import { useConsoleState, type StreamStatus } from '../features/dashboard/useConsoleState'
+import { useThresholds, type Thresholds } from '../features/dashboard/useThresholds'
 import type { AppOutletContext } from '../app/App'
 
 const controlVariableOrder: VariableKey[] = CONTROL_VARIABLE_KEYS
 const overviewVariableOrder: VariableKey[] = PRIMARY_VARIABLE_KEYS
 const secondaryVariableOrder: VariableKey[] = SECONDARY_VARIABLE_KEYS
-const POWER_LIMIT = 240
+// 정격값(rated) — `digital_twin/simulation/config.py`의 InitialOutput / FeatureConfig 기준.
+// 운영 임계(caution/danger)는 useThresholds로 백엔드에서 받아온다.
+const NOX_RATED = 20
+const EXHAUST_RATED = 580
+const LAMBDA_RATED = 1.1
+const EFFICIENCY_RATED = 0.89
 
 export function ServicePage() {
   const { mode, settingsOpen, closeSettings, reportStreamStatus } = useOutletContext<AppOutletContext>()
@@ -31,7 +36,10 @@ export function ServicePage() {
     updateActiveVariableConfig,
     restoreActiveVariableDefaults,
   } = useConsoleState(mode)
+  const thresholds = useThresholds()
   const [draftConfig, setDraftConfig] = useState<VariableConfigUpdate | null>(null)
+  // 예측 모드는 실시간 운전 데이터 기반 NOx 예측 표시 전용 — 제어 조작은 잠근다.
+  const isPredictionMode = mode === 'pred'
 
   const activeVariable = state.variables[state.activeVar]
   const resolvedDraftConfig = draftConfig ?? {
@@ -41,24 +49,22 @@ export function ServicePage() {
   }
   const displayedNox = mode === 'sim' ? state.metrics.nox : state.metrics.predictedNox
   const streamLabel = streamStatusLabel(status)
-  const noxStatus = displayedNox > NOX_LIMIT ? '위험' : streamLabel.text
+  const noxStatus = displayedNox > thresholds.noxLimit ? '위험' : streamLabel.text
   const controlCards = overviewVariableOrder.map((key) => state.variables[key])
   const secondaryCards = secondaryVariableOrder.map((key) => state.variables[key])
   const noxValues = state.history.length > 0 ? state.history.map((point) => point.nox) : [displayedNox]
-  const powerValues = state.history.length > 0 ? state.history.map((point) => point.power) : [state.metrics.power]
-  const noxHeadroom = NOX_LIMIT - displayedNox
-  const powerHeadroom = state.metrics.power - POWER_LIMIT
+  // 효율은 정격 이상이면 항상 정상. 미만일 때만 caution/danger 임계로 색 판정.
+  const efficiency = state.metrics.efficiency
+  const noxHeadroom = thresholds.noxLimit - displayedNox
   const noxHeadroomTone = headroomTone(noxHeadroom, 12, 5)
-  const powerHeadroomTone = headroomTone(powerHeadroom, 12, 5)
+  const efficiencyHeadroomTone = efficiencyTone(efficiency, thresholds)
   const noxRange = getRange(noxValues)
-  const powerRange = getRange(powerValues)
-  const tableRows = [
-    ['NOx', displayedNox.toFixed(1), 'ppm', NOX_LIMIT.toFixed(1), '5.0s', displayedNox > NOX_LIMIT ? '위험' : '정상'],
-    ['발전량', state.metrics.power.toFixed(1), 'MW', '248.6', '8.5s', state.metrics.power < 240 ? '주의' : '정상'],
-    ['일산화탄소 (CO)', state.metrics.co.toFixed(1), 'ppm', '200.0', '1.8s', '정상'],
-    ['배기온도', state.metrics.exhaust.toFixed(1), '°C', '580.0', '10.0s', state.metrics.exhaust > 600 ? '주의' : '정상'],
-    ['공기비 (λ)', state.metrics.lambda.toFixed(2), '-', '1.10', '0.9s', '정상'],
-  ]
+  const tableRows = buildOutputTableRows({
+    displayedNox,
+    metrics: state.metrics,
+    history: state.history,
+    thresholds,
+  })
   const handleCloseSettings = useCallback(() => {
     setDraftConfig(null)
     closeSettings()
@@ -88,16 +94,17 @@ export function ServicePage() {
               title="NOx"
               value={displayedNox}
               unit="ppm"
-              subtitle={`허용치 ${NOX_LIMIT} ppm`}
+              subtitle={`허용치 ${thresholds.noxLimit} ppm`}
               status={noxStatus}
               emphatic
             />
             <KpiCard
-              title="발전량"
-              value={state.metrics.power}
-              unit="MW"
-              subtitle={POWER_RAW_NAME}
-              status="정상"
+              title="발전 효율"
+              value={efficiency * 100}
+              unit="%"
+              subtitle="η = DWATT / (ṁ_syngas × LHV)"
+              status={efficiencyKpiStatus(efficiency, thresholds)}
+              digits={1}
               emphatic
             />
             {controlCards.map((variable) => (
@@ -153,18 +160,17 @@ export function ServicePage() {
                 <span className={`stream-badge ${streamLabel.tone}`}>{streamLabel.text}</span>
               </header>
               <div className="chart-body">
-                <NoxChart history={state.history} current={displayedNox} />
+                <NoxChart history={state.history} current={displayedNox} noxLimit={thresholds.noxLimit} />
               </div>
             </section>
 
             <section className="panel chart-card">
               <header className="chart-header">
                 <div>
-                  <div className="chart-title">일산화탄소 (CO) / 공기비 (λ) / 배기온도</div>
+                  <div className="chart-title">공기비 (λ) / 배기온도</div>
                   <div className="chart-subtitle">정규화 · 최근 60s</div>
                 </div>
                 <div className="chart-legend mono">
-                  <span className="legend-co">일산화탄소</span>
                   <span className="legend-lambda">공기비</span>
                   <span className="legend-exhaust">배기온도</span>
                 </div>
@@ -181,22 +187,28 @@ export function ServicePage() {
                 <tr>
                   <th>변수명</th>
                   <th>현재값</th>
-                  <th>단위</th>
-                  <th>타겟값</th>
-                  <th>시간상수 τ</th>
+                  <th>기준치</th>
+                  <th>편차</th>
+                  <th>최근 60s 변동폭</th>
                   <th>상태</th>
                 </tr>
               </thead>
               <tbody>
-                {tableRows.map(([name, value, unit, target, tau, status]) => (
-                  <tr key={name}>
-                    <td className="label-cell">{name}</td>
-                    <td>{value}</td>
-                    <td className="muted-cell">{unit}</td>
-                    <td className="muted-cell">{target}</td>
-                    <td className="muted-cell">{tau}</td>
+                {tableRows.map((row) => (
+                  <tr key={row.name}>
+                    <td className="label-cell">{row.name}</td>
                     <td>
-                      <span className={statusClass(status)}>{status}</span>
+                      {row.currentText}
+                      <span className="cell-unit">{row.unit}</span>
+                    </td>
+                    <td className="muted-cell">
+                      {row.ratedText}
+                      <span className="cell-unit">{row.unit}</span>
+                    </td>
+                    <td className={`deviation-cell ${row.deviationTone}`}>{row.deviationText}</td>
+                    <td className="muted-cell">{row.rangeText}</td>
+                    <td>
+                      <span className={statusClass(row.status)}>{row.status}</span>
                     </td>
                   </tr>
                 ))}
@@ -205,13 +217,19 @@ export function ServicePage() {
           </section>
         </div>
 
-        <aside className="sidebar">
+        <aside className={isPredictionMode ? 'sidebar sidebar-locked' : 'sidebar'}>
+          {isPredictionMode ? (
+            <div className="sidebar-lock-banner mono" role="status">
+              예측 모드 — 제어 잠금 (실시간 데이터 기반 5분 후 NOx 예측)
+            </div>
+          ) : null}
           <div className="sidebar-section">
             <div className="sidebar-title">제어 변수 선택</div>
             <select
               className="control-select mono"
               value={state.activeVar}
               onChange={(event) => setActiveVar(event.target.value as VariableKey)}
+              disabled={isPredictionMode}
             >
               {controlVariableOrder.map((key) => (
                 <option key={key} value={key}>
@@ -241,7 +259,7 @@ export function ServicePage() {
                   type="button"
                   className="step-button"
                   onClick={() => stepActiveVar(-1)}
-                  disabled={activeVariable.value <= activeVariable.min}
+                  disabled={isPredictionMode || activeVariable.value <= activeVariable.min}
                   aria-label="감소"
                 >
                   <ArrowDownIcon />
@@ -251,13 +269,19 @@ export function ServicePage() {
                   type="button"
                   className="step-button"
                   onClick={() => stepActiveVar(1)}
-                  disabled={activeVariable.value >= activeVariable.max}
+                  disabled={isPredictionMode || activeVariable.value >= activeVariable.max}
                   aria-label="증가"
                 >
                   <ArrowUpIcon />
                 </button>
               </div>
-              <button type="button" className="icon-button" onClick={resetControls} aria-label="초기화">
+              <button
+                type="button"
+                className="icon-button"
+                onClick={resetControls}
+                disabled={isPredictionMode}
+                aria-label="초기화"
+              >
                 <ResetIcon />
               </button>
             </div>
@@ -268,15 +292,15 @@ export function ServicePage() {
             <div className="summary-highlight">
               <div className="summary-label">NOx 임계 여유</div>
               <div className={`summary-value ${noxHeadroomTone}`}>
-                {noxHeadroom >= 0 ? `+${noxHeadroom.toFixed(1)}` : `${noxHeadroom.toFixed(1)}`}
+                {formatHeadroom(noxHeadroom, 1)}
                 <span className="summary-unit">ppm</span>
               </div>
             </div>
             <div className="summary-highlight">
-              <div className="summary-label">발전량 임계 여유</div>
-              <div className={`summary-value ${powerHeadroomTone}`}>
-                {powerHeadroom >= 0 ? `+${powerHeadroom.toFixed(1)}` : `${powerHeadroom.toFixed(1)}`}
-                <span className="summary-unit">MW</span>
+              <div className="summary-label">발전 효율 임계 여유</div>
+              <div className={`summary-value ${efficiencyHeadroomTone}`}>
+                {formatEfficiencyHeadroom(efficiency, thresholds)}
+                <span className="summary-unit">%p</span>
               </div>
             </div>
             <div className="telemetry-divider" />
@@ -290,12 +314,12 @@ export function ServicePage() {
                 unit="ppm"
               />
               <SummaryRangeMetric
-                label="최근 60초 발전량"
-                minLabel="최솟값"
-                minValue={powerRange.min.toFixed(1)}
-                maxLabel="최댓값"
-                maxValue={powerRange.max.toFixed(1)}
-                unit="MW"
+                label="현재 발전 효율"
+                minLabel="현재"
+                minValue={(efficiency * 100).toFixed(1)}
+                maxLabel="정격"
+                maxValue={(EFFICIENCY_RATED * 100).toFixed(1)}
+                unit="%"
               />
             </div>
           </div>
@@ -552,7 +576,15 @@ function SummaryRangeMetric({
   )
 }
 
-function NoxChart({ history, current }: { history: MetricPoint[]; current: number }) {
+function NoxChart({
+  history,
+  current,
+  noxLimit,
+}: {
+  history: MetricPoint[]
+  current: number
+  noxLimit: number
+}) {
   const width = 560
   const height = 170
   const bottomLabelY = height - 12
@@ -564,10 +596,10 @@ function NoxChart({ history, current }: { history: MetricPoint[]; current: numbe
   const focusedRange = createRange(values, 0.28, 1.2)
   const max = focusedRange.max
   const min = focusedRange.min
-  const thresholdInRange = NOX_LIMIT <= max
+  const thresholdInRange = noxLimit <= max
   const line = buildLinePath(values, min, max, width, height)
   const area = `${line} L ${width} ${height} L 0 ${height} Z`
-  const thresholdY = thresholdInRange ? scaleY(NOX_LIMIT, min, max, height) : thresholdPinnedY
+  const thresholdY = thresholdInRange ? scaleY(noxLimit, min, max, height) : thresholdPinnedY
   const currentY = scaleY(current, min, max, height)
 
   return (
@@ -589,7 +621,7 @@ function NoxChart({ history, current }: { history: MetricPoint[]; current: numbe
         strokeWidth="1"
       />
       <text x="8" y={thresholdY - 6} className="svg-label svg-alert">
-        {NOX_LIMIT} ppm
+        {noxLimit} ppm
       </text>
       <path d={area} fill="url(#noxArea)" />
       <path d={line} fill="none" stroke="#3B82F6" strokeWidth="2" strokeLinecap="round" />
@@ -617,10 +649,8 @@ function MultiChart({ history }: { history: MetricPoint[] }) {
   if (history.length < 2) {
     return <ChartPlaceholder width={width} height={height} />
   }
-  const coValues = history.map((point) => point.co)
   const lambdaValues = history.map((point) => point.lambda)
   const exhaustValues = history.map((point) => point.exhaust)
-  const coRange = createRange(coValues, 0.12, 0.6)
   const lambdaRange = createRange(lambdaValues, 0.18, 0.02)
   const exhaustRange = createRange(exhaustValues, 0.08, 1.2)
 
@@ -642,13 +672,6 @@ function MultiChart({ history }: { history: MetricPoint[] }) {
         )
       })}
       <path
-        d={buildSeriesPath(coValues, coRange.min, coRange.max, padding.left, padding.top, plotWidth, plotHeight)}
-        fill="none"
-        stroke="#10B981"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-      <path
         d={buildSeriesPath(lambdaValues, lambdaRange.min, lambdaRange.max, padding.left, padding.top, plotWidth, plotHeight)}
         fill="none"
         stroke="#3B82F6"
@@ -662,16 +685,10 @@ function MultiChart({ history }: { history: MetricPoint[] }) {
         strokeWidth="1.8"
         strokeLinecap="round"
       />
-      <text x="2" y="12" className="svg-label" fill="#10B981">
-        {coRange.max.toFixed(1)} ppm
-      </text>
-      <text x="6" y={bottomLabelY} className="svg-label" fill="#10B981">
-        {coRange.min.toFixed(1)} ppm
-      </text>
-      <text x={width / 2} y="12" textAnchor="middle" className="svg-label" fill="#3B82F6">
+      <text x="2" y="12" className="svg-label" fill="#3B82F6">
         λ {lambdaRange.max.toFixed(2)}
       </text>
-      <text x={width / 2} y={bottomLabelY} textAnchor="middle" className="svg-label" fill="#3B82F6">
+      <text x="6" y={bottomLabelY} className="svg-label" fill="#3B82F6">
         λ {lambdaRange.min.toFixed(2)}
       </text>
       <text x={width - 2} y="12" textAnchor="end" className="svg-label" fill="#F59E0B">
@@ -766,6 +783,138 @@ function headroomTone(value: number, cautionThreshold: number, dangerThreshold: 
   if (value <= dangerThreshold) return 'summary-value-danger'
   if (value <= cautionThreshold) return 'summary-value-caution'
   return 'summary-value-safe'
+}
+
+// 임계 여유 표기: 정상은 부호 없이 조용하게, 임계 초과(음수)만 "초과 N"으로 강조.
+function formatHeadroom(value: number, digits: number) {
+  if (value < 0) return `초과 ${Math.abs(value).toFixed(digits)}`
+  return value.toFixed(digits)
+}
+
+type OutputTableRow = {
+  name: string
+  unit: string
+  currentText: string
+  ratedText: string
+  deviationText: string
+  deviationTone: string
+  rangeText: string
+  status: string
+}
+
+// 동적 출력값 4종 — 정격값은 DT InitialOutput/FeatureConfig SoT, 임계는 백엔드 thresholds.
+// CO는 학습 타겟에서 제외됐고 백엔드 WS도 보내지 않아 표에서 제외, MultiChart 합성식만 유지.
+function buildOutputTableRows(args: {
+  displayedNox: number
+  metrics: ConsoleMetrics
+  history: MetricPoint[]
+  thresholds: Thresholds
+}): OutputTableRow[] {
+  const { displayedNox, metrics, history, thresholds } = args
+  const noxRange = history.length > 0
+    ? getRange(history.map((p) => p.nox))
+    : { min: displayedNox, max: displayedNox }
+  const exhaustRange = history.length > 0
+    ? getRange(history.map((p) => p.exhaust))
+    : { min: metrics.exhaust, max: metrics.exhaust }
+  const lambdaRange = history.length > 0
+    ? getRange(history.map((p) => p.lambda))
+    : { min: metrics.lambda, max: metrics.lambda }
+  const efficiencyRangePct = history.length > 0
+    ? getRange(history.map((p) => p.efficiency * 100))
+    : { min: metrics.efficiency * 100, max: metrics.efficiency * 100 }
+
+  return [
+    {
+      name: 'NOx',
+      unit: 'ppm',
+      currentText: displayedNox.toFixed(1),
+      ratedText: NOX_RATED.toFixed(1),
+      ...formatDeviation(displayedNox - NOX_RATED, 1, 5, 10),
+      rangeText: `${noxRange.min.toFixed(1)} ~ ${noxRange.max.toFixed(1)}`,
+      status: displayedNox > thresholds.noxLimit ? '위험' : '정상',
+    },
+    {
+      name: '배기온도',
+      unit: '°C',
+      currentText: metrics.exhaust.toFixed(1),
+      ratedText: EXHAUST_RATED.toFixed(1),
+      ...formatDeviation(metrics.exhaust - EXHAUST_RATED, 1, 15, 30),
+      rangeText: `${exhaustRange.min.toFixed(1)} ~ ${exhaustRange.max.toFixed(1)}`,
+      status: exhaustStatus(metrics.exhaust, thresholds),
+    },
+    {
+      name: '공기비 (λ)',
+      unit: '',
+      currentText: metrics.lambda.toFixed(2),
+      ratedText: LAMBDA_RATED.toFixed(2),
+      ...formatDeviation(metrics.lambda - LAMBDA_RATED, 2, 0.05, 0.1),
+      rangeText: `${lambdaRange.min.toFixed(2)} ~ ${lambdaRange.max.toFixed(2)}`,
+      status: lambdaStatus(metrics.lambda, thresholds),
+    },
+    {
+      name: '발전 효율 (η)',
+      unit: '%',
+      currentText: (metrics.efficiency * 100).toFixed(1),
+      ratedText: (EFFICIENCY_RATED * 100).toFixed(1),
+      ...formatDeviation((metrics.efficiency - EFFICIENCY_RATED) * 100, 1, 2, 5),
+      rangeText: `${efficiencyRangePct.min.toFixed(1)} ~ ${efficiencyRangePct.max.toFixed(1)}`,
+      status: efficiencyTableStatus(metrics.efficiency, thresholds),
+    },
+  ]
+}
+
+function formatDeviation(
+  delta: number,
+  digits: number,
+  cautionAbs: number,
+  dangerAbs: number,
+): { deviationText: string; deviationTone: string } {
+  const abs = Math.abs(delta)
+  const sign = delta >= 0 ? '+' : '−'
+  const text = `${sign}${abs.toFixed(digits)}`
+  const tone =
+    abs >= dangerAbs ? 'deviation-danger'
+    : abs >= cautionAbs ? 'deviation-caution'
+    : 'deviation-normal'
+  return { deviationText: text, deviationTone: tone }
+}
+
+// 효율은 정격(0.89) 이상이면 항상 정상 — 미만일 때만 caution/danger 임계 사용.
+function efficiencyKpiStatus(efficiency: number, t: Thresholds): string {
+  if (efficiency < t.efficiencyDanger) return '위험'
+  if (efficiency < t.efficiencyCaution) return '주의'
+  return '정상'
+}
+
+function efficiencyTableStatus(efficiency: number, t: Thresholds): string {
+  return efficiencyKpiStatus(efficiency, t)
+}
+
+function efficiencyTone(efficiency: number, t: Thresholds): string {
+  if (efficiency < t.efficiencyDanger) return 'summary-value-danger'
+  if (efficiency < t.efficiencyCaution) return 'summary-value-caution'
+  return 'summary-value-safe'
+}
+
+function formatEfficiencyHeadroom(efficiency: number, t: Thresholds): string {
+  // 정격 이상이면 그냥 "정상 운전" 표시. caution 미만일 때만 부족분(%p) 표시.
+  if (efficiency >= t.efficiencyCaution) {
+    return ((efficiency - t.efficiencyCaution) * 100).toFixed(1)
+  }
+  return `부족 ${((t.efficiencyCaution - efficiency) * 100).toFixed(1)}`
+}
+
+function exhaustStatus(value: number, t: Thresholds): string {
+  if (value >= t.exhaustDangerC) return '위험'
+  if (value >= t.exhaustCautionC) return '주의'
+  return '정상'
+}
+
+function lambdaStatus(value: number, t: Thresholds): string {
+  if (value <= t.lambdaDangerLo || value >= t.lambdaDangerHi) return '위험'
+  if (value <= t.lambdaCautionLo || value >= t.lambdaCautionHi) return '주의'
+  return '정상'
 }
 
 function statusClass(status: string) {

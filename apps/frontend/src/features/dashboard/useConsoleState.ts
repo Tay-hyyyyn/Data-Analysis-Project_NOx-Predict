@@ -33,6 +33,9 @@ export type StreamStatus =
 const RECONNECT_DELAYS_MS = [1000, 2000, 4000] // exponential backoff 최대 3회
 const NORMAL_CLOSE_CODES = new Set([1000]) // 명시적 stop / 정상 종료
 const ACTIVE_SESSION_STORAGE_KEY = 'noxo.activeSessionId'
+// 5분 horizon 예측 폴링 주기 — WS 스트림과 동일한 1Hz로 갱신해 차트와 동조.
+// 예측 자체는 5분 후 값이지만 표시 주기는 사용자 체감을 위해 실시간과 맞춘다.
+const PREDICTION_POLL_INTERVAL_MS = 1_000
 
 export function useConsoleState(mode: Mode) {
   const tickRef = useRef(0)
@@ -184,6 +187,38 @@ export function useConsoleState(mode: Mode) {
     scheduleReconnectRef.current = scheduleReconnect
   }, [scheduleReconnect])
 
+  // 예측 모드 — 활성 sid 기준 5분 horizon 예측을 주기적으로 갱신.
+  // mock/disconnected/sim 모드에서는 동작하지 않는다.
+  useEffect(() => {
+    if (!enableBackend || mode !== 'pred') return
+
+    let cancelled = false
+    let timer: number | null = null
+
+    async function tick() {
+      const sid = sessionIdRef.current
+      if (!sid) return
+      try {
+        const result = await fetchPrediction(sid)
+        if (cancelled || result === null) return
+        setState((current) => ({
+          ...current,
+          metrics: { ...current.metrics, predictedNox: result.predictedNox },
+        }))
+      } catch (error) {
+        console.warn('prediction fetch failed', error)
+      }
+    }
+
+    void tick()
+    timer = window.setInterval(() => void tick(), PREDICTION_POLL_INTERVAL_MS)
+
+    return () => {
+      cancelled = true
+      if (timer !== null) window.clearInterval(timer)
+    }
+  }, [enableBackend, mode])
+
   useEffect(() => {
     if (!enableBackend) return
 
@@ -223,7 +258,7 @@ export function useConsoleState(mode: Mode) {
 
     async function connectBackend() {
       try {
-        const session = await startSession(mode)
+        const session = await startSession()
         if (cancelled) {
           await stopSession(session.sid)
           return
@@ -344,24 +379,21 @@ export function useConsoleState(mode: Mode) {
   }
 }
 
-async function startSession(mode: Mode) {
+async function startSession() {
   const staleSid = getStoredSessionId()
   if (staleSid) {
     await stopSession(staleSid)
     clearStoredSessionId(staleSid)
   }
 
-  const initialCondition = {
-    [variableSeed.syngasFlow.rawName]: variableSeed.syngasFlow.base,
-    [variableSeed.n2Offset.rawName]: variableSeed.n2Offset.base,
-    [variableSeed.igvOpening.rawName]: variableSeed.igvOpening.base,
-  }
+  // 백엔드는 mode를 사용하지 않는다 — sim/pred 분기는 프론트 표시 정책일 뿐.
+  // (예측 모드에서도 sim_loop는 동일하게 돌고, 예측은 별도 POST /api/prediction.)
+  const initialCondition = buildControlTagPayload((key) => variableSeed[key].base)
 
   const response = await fetch(`${apiBaseUrl()}/api/session/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      mode,
       initial_condition: initialCondition,
     }),
   })
@@ -406,17 +438,37 @@ async function sendControl(
   sid: string,
   variables: ConsoleState['variables'],
 ) {
-  const payload = {
-    [variableSeed.syngasFlow.rawName]: variables.syngasFlow.value,
-    [variableSeed.n2Offset.rawName]: variables.n2Offset.value,
-    [variableSeed.igvOpening.rawName]: variables.igvOpening.value,
-  }
+  // 백엔드 ControlPayload는 10개 변수 모두 required (apps/backend/app/schemas/session.py).
+  const payload = buildControlTagPayload((key) => variables[key].value)
 
   await fetch(`${apiBaseUrl()}/api/session/${sid}/control`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
+}
+
+function buildControlTagPayload(
+  pickValue: (key: VariableKey) => number,
+): Record<string, number> {
+  return CONTROL_VARIABLE_KEYS.reduce<Record<string, number>>((acc, key) => {
+    acc[variableSeed[key].rawName] = pickValue(key)
+    return acc
+  }, {})
+}
+
+async function fetchPrediction(
+  sid: string,
+): Promise<{ predictedNox: number } | null> {
+  const response = await fetch(`${apiBaseUrl()}/api/prediction`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sid }),
+  })
+  if (!response.ok) return null
+  const payload = (await response.json()) as { predicted_nox?: number }
+  if (typeof payload.predicted_nox !== 'number') return null
+  return { predictedNox: payload.predicted_nox }
 }
 
 async function stopSession(sid: string) {

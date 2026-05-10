@@ -28,18 +28,18 @@ export type VariableConfig = {
 export type MetricPoint = {
   label: string
   nox: number
-  co: number
   exhaust: number
   lambda: number
   power: number
+  efficiency: number
 }
 
 export type ConsoleMetrics = {
   nox: number
-  co: number
   exhaust: number
   lambda: number
   power: number
+  efficiency: number
   predictedNox: number
 }
 
@@ -260,10 +260,10 @@ export function createInitialConsoleState(seedHistory = false): ConsoleState {
         return {
           label: `${HISTORY_LENGTH - index}s`,
           nox: point.nox,
-          co: point.co,
           exhaust: point.exhaust,
           lambda: point.lambda,
           power: point.power,
+          efficiency: point.efficiency,
         }
       })
     : []
@@ -352,10 +352,15 @@ export function createStateFromSnapshot(
 
   const metrics = {
     nox: pickSnapshotValue(outputSource, ['nox'], previous?.metrics.nox ?? 25, 1),
-    co: pickSnapshotValue(outputSource, ['co'], previous?.metrics.co ?? 12, 1),
     exhaust: pickSnapshotValue(outputSource, ['exhaust_temp'], previous?.metrics.exhaust ?? 580, 1),
     lambda: pickSnapshotValue(outputSource, ['lambda', 'lambda_'], previous?.metrics.lambda ?? 1.1, 2),
     power: pickSnapshotValue(outputSource, ['power', POWER_RAW_NAME], previous?.metrics.power ?? 248.6, 1),
+    efficiency: pickSnapshotValue(
+      outputSource,
+      ['efficiency'],
+      previous?.metrics.efficiency ?? 0.89,
+      3,
+    ),
     predictedNox: pickSnapshotValue(
       outputSource,
       ['predicted_nox'],
@@ -416,8 +421,6 @@ export function deriveMetrics(
     * (1 + 0.7 * Math.max(0, lambda - 1))
     * (1 + syngasValveAvg * 0.18 - n2Assist * 0.08)
   const nox = noxBase + Math.sin(tick * 0.16) * 0.8
-  const coBase = 10 + 65 * (lambda - 1) ** 2 + ibhHeat * 1.5
-  const co = coBase + Math.sin(tick * 0.25) * 0.4
   const powerBase =
     244
     + (syngas - 1500) * 0.04
@@ -425,14 +428,19 @@ export function deriveMetrics(
     + syngasValveAvg * 5
     - n2Assist * 2
   const power = Math.max(0, powerBase + Math.sin(tick * 0.18) * 1.2)
+  const efficiency = clamp(
+    0.89 - Math.abs(lambda - 1.1) * 0.05 - Math.abs(syngas - 1500) / 1500 * 0.02,
+    0,
+    1,
+  )
   const predictedNox = nox + 6 + (mode === 'pred' ? 4 : 0)
 
   return {
     nox: round(nox, 1),
-    co: round(co, 1),
     exhaust: round(exhaust, 1),
     lambda: round(lambda, 2),
     power: round(power, 1),
+    efficiency: round(efficiency, 3),
     predictedNox: round(predictedNox, 1),
   }
 }
@@ -471,10 +479,10 @@ export function appendHistory(
     {
       label: index === 0 ? 'now' : `${index}s`,
       nox: metrics.nox,
-      co: metrics.co,
       exhaust: metrics.exhaust,
       lambda: metrics.lambda,
       power: metrics.power,
+      efficiency: metrics.efficiency,
     },
   ]
 }

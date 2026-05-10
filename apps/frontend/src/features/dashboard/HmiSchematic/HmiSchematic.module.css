@@ -155,6 +155,15 @@
   display: none;
 }
 
+/* 메인 KPI 카드 단위 라벨(ppm/°C/MW) — 값과 sparkline 사이 가운데로 이동.
+   원본 SVG는 단위가 sparkline 쪽에 치우쳐 값 옆이 휑함. -16px 시프트로 균등화.
+   TTXM의 °C는 id에 HTML 엔티티가 들어있어 형제 path 인덱스로 매칭 (box/dot/TTXM 뒤 4번째). */
+.root :global(#metric_NOx > path#ppm),
+.root :global(#target-DWATT > path#MW),
+.root :global(#target-TTXM > path:nth-of-type(4)) {
+  transform: translateX(-8px);
+}
+
 /* 동적 spark line — 정상 흰색 */
 .root :global([data-role^="spark-"]) {
   fill: none;

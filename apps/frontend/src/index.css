@@ -285,6 +285,20 @@ a {
   border-left: 1px solid rgba(255, 255, 255, 0.07);
 }
 
+.sidebar-locked .sidebar-section {
+  opacity: 0.55;
+}
+
+.sidebar-lock-banner {
+  padding: 10px 14px;
+  background: rgba(239, 68, 68, 0.08);
+  border-bottom: 1px solid rgba(239, 68, 68, 0.32);
+  color: #FCA5A5;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  line-height: 1.45;
+}
+
 .sidebar-section {
   padding: 14px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
@@ -294,7 +308,7 @@ a {
 .section-label,
 .process-label {
   margin-bottom: 12px;
-  color: var(--text-3);
+  color: rgba(255, 255, 255, 0.62);
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.1em;
@@ -682,10 +696,6 @@ a {
   font-size: 9px;
 }
 
-.legend-co {
-  color: var(--green);
-}
-
 .legend-lambda {
   color: var(--blue);
 }
@@ -723,25 +733,54 @@ a {
   background: var(--surface-2);
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
   color: var(--text-3);
-  text-align: left;
+  text-align: center;
   font: 500 10px var(--font-mono);
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.data-table thead th:first-child {
+  text-align: left;
 }
 
 .data-table td {
   padding: 8px 12px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   font: 12px var(--font-mono);
+  text-align: center;
 }
 
-.label-cell {
+.data-table td.label-cell {
   font-family: var(--font-ui);
   color: var(--text-2);
+  text-align: left;
 }
 
 .muted-cell {
-  color: var(--text-3);
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.cell-unit {
+  margin-left: 4px;
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 10px;
+}
+
+.deviation-cell {
+  font-feature-settings: 'tnum';
+}
+
+.deviation-normal {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.deviation-caution {
+  color: #FBBF24;
+}
+
+.deviation-danger {
+  color: #EF4444;
+  font-weight: 600;
 }
 
 .description-cell {
@@ -805,7 +844,7 @@ a {
 }
 
 .control-label {
-  color: var(--text-3);
+  color: rgba(255, 255, 255, 0.7);
   font-size: 11px;
 }
 
@@ -818,7 +857,7 @@ a {
 
 .control-meta {
   margin-top: 3px;
-  color: var(--text-3);
+  color: rgba(255, 255, 255, 0.5);
   font-size: 10px;
   letter-spacing: 0.01em;
 }
@@ -831,13 +870,13 @@ a {
 .control-unit,
 .telemetry-unit {
   margin-left: 4px;
-  color: var(--text-3);
+  color: rgba(255, 255, 255, 0.55);
   font-size: 10px;
 }
 
 .control-base {
   margin-top: 4px;
-  color: rgba(255, 255, 255, 0.22);
+  color: rgba(255, 255, 255, 0.55);
   font-size: 10px;
 }
 
