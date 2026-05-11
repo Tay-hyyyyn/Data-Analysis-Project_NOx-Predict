@@ -49,6 +49,8 @@ docs/**
 !docs/DB_CHANGE_REQUEST.md
 !docs/ci-cd/
 !docs/ci-cd/**
+!docs/data-platform/
+!docs/data-platform/**
 models/**
 !models/
 !models/**/

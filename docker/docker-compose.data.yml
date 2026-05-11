@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB:-igcc_db}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
@@ -25,6 +25,7 @@ services:
       NOXO_PROJECT_ROOT: /opt/airflow/project
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-igcc_db}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+      ETL_CHUNK_SIZE: ${ETL_CHUNK_SIZE:-50000}
       _PIP_ADDITIONAL_REQUIREMENTS: pandas python-dotenv psycopg2-binary
     ports:
       - "${AIRFLOW_PORT:-8080}:8080"
