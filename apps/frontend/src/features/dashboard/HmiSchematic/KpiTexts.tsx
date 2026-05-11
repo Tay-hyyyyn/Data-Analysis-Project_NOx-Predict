@@ -21,9 +21,9 @@ export interface KpiTextsProps {
   nqkr3: number
 }
 
-type AnchorKey = keyof typeof KPI_ANCHORS
+type KpiKey = keyof KpiTextsProps
 
-const ITEMS: ReadonlyArray<{ key: AnchorKey; digits: number }> = [
+const ITEMS: ReadonlyArray<{ key: KpiKey; digits: number }> = [
   { key: 'nox', digits: 1 },
   { key: 'ttxm', digits: 1 },
   { key: 'dwatt', digits: 1 },
