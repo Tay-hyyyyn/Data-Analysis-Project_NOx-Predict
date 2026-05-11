@@ -15,7 +15,12 @@ PROJECT_ROOT = Path(os.getenv("NOXO_PROJECT_ROOT", Path(__file__).resolve().pare
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from database.load_to_postgres import DEFAULT_TARGET_FOLDER, get_database_url, run_pipeline
+from database.load_to_postgres import (
+    DEFAULT_FILE_PATTERN,
+    DEFAULT_TARGET_FOLDER,
+    get_database_url,
+    run_pipeline,
+)
 
 
 load_dotenv(PROJECT_ROOT / ".env")
@@ -51,15 +56,21 @@ def notify_failure(context: dict) -> None:
 
 
 def check_raw_csv_files() -> dict:
-    file_list = sorted(DEFAULT_TARGET_FOLDER.glob("*.csv"))
+    file_list = sorted(DEFAULT_TARGET_FOLDER.glob(DEFAULT_FILE_PATTERN))
     if not file_list:
-        raise FileNotFoundError(f"CSV 파일을 찾을 수 없습니다: {DEFAULT_TARGET_FOLDER}")
+        raise FileNotFoundError(
+            f"CSV 파일을 찾을 수 없습니다: {DEFAULT_TARGET_FOLDER / DEFAULT_FILE_PATTERN}"
+        )
 
     result = {
         "file_count": len(file_list),
+        "file_pattern": DEFAULT_FILE_PATTERN,
         "folder": str(DEFAULT_TARGET_FOLDER),
     }
-    print(f"[Check] CSV 파일 {result['file_count']}개 확인: {result['folder']}")
+    print(
+        f"[Check] CSV 파일 {result['file_count']}개 확인: "
+        f"{result['folder']}/{result['file_pattern']}"
+    )
     return result
 
 

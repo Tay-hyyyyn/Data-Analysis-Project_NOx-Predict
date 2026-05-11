@@ -17,7 +17,7 @@ docker logs noxo_airflow
 ## DAG
 
 - DAG ID: `noxo_sensor_data_etl`
-- 주요 흐름: CSV 파일 확인 -> PostgreSQL 연결 확인 -> ETL 실행 및 검증 -> Slack 성공 알림
+- 주요 흐름: train CSV 파일 확인 -> PostgreSQL 연결 확인 -> ETL 실행 및 검증 -> Slack 성공 알림
 - 실패 시: 실패한 task와 에러 메시지를 Slack으로 전송
 
 ## 환경변수
@@ -25,3 +25,5 @@ docker logs noxo_airflow
 실제 Slack Webhook URL은 Git에 커밋하지 않고 `.env`의 `SLACK_WEBHOOK_URL`에만 저장합니다.
 
 로컬 PC에서 직접 ETL을 실행할 때는 `DATABASE_URL`의 host가 `localhost`입니다. Airflow 컨테이너 안에서는 Docker Compose 네트워크를 사용하므로 `docker/docker-compose.data.yml`에서 host를 `postgres`로 주입합니다.
+
+기본 ETL 입력은 `NOx_train_*.csv`입니다. `NOx_test_20250825.csv`는 Kafka 스트리밍 시뮬레이션 입력으로 분리해서 운영 `sensor_data`에 섞어 적재하지 않습니다.
