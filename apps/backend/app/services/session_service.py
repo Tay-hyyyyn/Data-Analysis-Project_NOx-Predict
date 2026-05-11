@@ -139,5 +139,6 @@ class SessionService:
             logger.debug("stop on missing sid=%s; continuing best-effort cleanup", sid)
         await self.sim_loop.stop(sid)
         self.injector.discard(sid)
+        self.session_contexts.pop(sid, None)
         self.state_store.remove(sid)
         await self.ws_manager.drop_session(sid)

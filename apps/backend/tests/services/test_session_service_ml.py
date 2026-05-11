@@ -240,8 +240,7 @@ async def test_create_session_preserves_initial_ml_call_timestamp(service, monke
 
 
 async def test_stop_session_removes_context_from_dict(service, monkeypatch):
-    """NS13 — SessionService.stop 호출 시 sim_loop.stop이 호출돼 finally cleanup 트리거.
-    (현재는 SimLoopManager._run.finally가 cleanup. stop_session은 task cancel만 트리거.)"""
+    """NS13 — SessionService.stop 호출 시 session_contexts에서 ctx 제거."""
     svc, _, _, state_store, contexts = service
     monkeypatch.setattr("asyncio.sleep", AsyncMock())
     state_store.__len__ = MagicMock(return_value=0)
@@ -249,15 +248,14 @@ async def test_stop_session_removes_context_from_dict(service, monkeypatch):
     state_store.__contains__ = MagicMock(side_effect=lambda sid: sid == "sid1")
     await svc.stop("sid1")
     svc.sim_loop.stop.assert_called_with("sid1")
+    assert "sid1" not in contexts
 
 
 async def test_stop_session_after_create_clears_all_state(service, monkeypatch):
-    """W5/NS13 — create → stop 후 4개 cleanup hook 모두 호출됨.
+    """W5/NS13 — create → stop 후 전체 cleanup hook이 수행됨.
 
-    SessionService.stop는 sim_loop.stop → injector.discard → state_store.remove →
-    ws_manager.drop_session 4단계를 수행. F그룹의 기존 stop 테스트는 sim_loop.stop만
-    확인하므로, 본 테스트는 4개 전부의 호출 시그니처를 검증해 W5 spec §4.4 명시적 종료
-    경로 invariant를 잠근다."""
+    SessionService.stop는 sim_loop.stop → injector.discard → session_contexts.pop →
+    state_store.remove → ws_manager.drop_session 순으로 정리한다."""
     svc, _, _, state_store, contexts = service
     monkeypatch.setattr("asyncio.sleep", AsyncMock())
     # create
@@ -269,6 +267,7 @@ async def test_stop_session_after_create_clears_all_state(service, monkeypatch):
     await svc.stop("sid1")
     svc.sim_loop.stop.assert_called_with("sid1")
     svc.injector.discard.assert_called_with("sid1")
+    assert "sid1" not in contexts
     state_store.remove.assert_called_with("sid1")
     svc.ws_manager.drop_session.assert_awaited_with("sid1")
 
