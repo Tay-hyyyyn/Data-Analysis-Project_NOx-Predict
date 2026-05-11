@@ -1,6 +1,7 @@
 """세션 라이프사이클 비즈니스 로직."""
 
 import logging
+import os
 import uuid
 
 from app.config import Settings
@@ -41,6 +42,13 @@ class SessionService:
         self.data_source = data_source
         self.simulator = simulator
         self.session_contexts = session_contexts if session_contexts is not None else {}
+
+    def is_ml_mode(self) -> bool:
+        """ML 모드 여부. data_source 설정 + SIMULATOR_FALLBACK_STUB 비활성."""
+        return (
+            self.data_source is not None
+            and os.getenv("SIMULATOR_FALLBACK_STUB", "").lower() != "true"
+        )
 
     def start(self, initial: ControlVars | None = None) -> SimulationState:
         if len(self.state_store) >= self.settings.sim_max_sessions:
