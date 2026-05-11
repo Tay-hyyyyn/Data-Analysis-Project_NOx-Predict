@@ -1,4 +1,4 @@
-# 데이터베이스 및 컬럼 정의서 (v1.1)
+# 데이터베이스 및 컬럼 정의서 (v1.2)
 
 본 문서는 IGCC NOx 예측 디지털 트윈 프로젝트의 데이터 엔지니어링 파트 표준 정의서입니다.
 백엔드 API, 프론트엔드 차트, ETL 스크립트는 본 문서의 운영 컬럼명을 기준으로 개발합니다.
@@ -22,20 +22,26 @@
 
 ## 2. 운영 테이블 컬럼 매핑
 
-현재 운영 DB에는 원천 CSV의 모든 센서 컬럼을 저장하지 않고, 백엔드/프론트/모델 서빙에 필요한 핵심 9개 컬럼만 `sensor_data`에 적재합니다.
+현재 운영 DB에는 원천 CSV의 모든 센서 컬럼을 저장하지 않고, 백엔드/프론트/디지털 트윈 모델 서빙에 필요한 운영 14개 컬럼만 `sensor_data`에 적재합니다.
 원천 전체 컬럼은 본 문서의 "원천 컬럼 사전"에 따로 기록합니다.
 
 | 원본 TagName (CSV) | 변경 후 컬럼명 (DB) | 데이터 타입 | 논리명 | 역할 |
 | :--- | :--- | :--- | :--- | :--- |
 | `TagName` | `measured_at` | TIMESTAMP | 측정 시간 | Primary Key |
-| `IGCC.DeNOX.AT_H1_901_PV` | `nox_ppm` | FLOAT | 가스터빈 후단 NOx 농도 | Target |
-| `IGCC.CC.G1.NQKR3_MONITOR` | `dgan_offset` | FLOAT | 희석질소 오프셋 | Control |
 | `IGCC.CC.G1.ca_fqsg_cl` | `syngas_flow` | FLOAT | 합성가스 유량 | Feature |
-| `IGCC.CC.G1.DWATT` | `generator_output` | FLOAT | 발전기 출력 | Feature |
+| `IGCC.CC.G1.csgv` | `igv_opening` | FLOAT | IGV 개도 | Control |
+| `IGCC.CC.G1.NQKR3_MONITOR` | `n2_offset` | FLOAT | 희석질소 오프셋 | Control |
+| `IGCC.CC.G1.nicvs1` | `n2_valve_1` | FLOAT | N2 주입 제어밸브 #1 개도 | Control |
+| `IGCC.CC.G1.FSAGR` | `syngas_srv` | FLOAT | Syngas SRV 개도 | Control |
+| `IGCC.CC.G1.FSAG11` | `syngas_gcv_1` | FLOAT | Syngas GCV #1 개도 | Control |
+| `IGCC.CC.G1.FSAG11A` | `syngas_gcv_1a` | FLOAT | Syngas GCV #1A 개도 | Control |
+| `IGCC.CC.G1.FSAG12` | `syngas_gcv_2` | FLOAT | Syngas GCV #2 개도 | Control |
+| `IGCC.CC.G1.CSBHX` | `ibh_valve` | FLOAT | IBH 입구 가열 제어밸브 개도 | Control |
+| `IGCC.CC.G1.NQJ` | `n2_flow` | FLOAT | 희석질소 유량 | Control |
+| `IGCC.DeNOX.AT_H1_901_PV` | `nox_ppm` | FLOAT | 가스터빈 후단 NOx 농도 | Target |
+| `IGCC.CC.G1.TTXM` | `exhaust_temp` | FLOAT | 배기가스 온도 | Target/Feature |
+| `IGCC.CC.G1.DWATT` | `power_mw` | FLOAT | 발전기 출력 | Target/Feature |
 | `IGCC.CC.G1.VNPR_P` | `npr_primary` | FLOAT | NPR Primary | Feature |
-| `IGCC.CC.G1.ATID` | `ambient_temp` | FLOAT | 대기 온도 | Feature |
-| `IGCC.CC.G1.NQJ` | `dgan_flow` | FLOAT | 희석질소 유량 | Feature |
-| `IGCC.CC.G1.csgv` | `igv` | FLOAT | IGV 개도 | Feature |
 
 ---
 
@@ -44,10 +50,12 @@
 ### 3.1. 데이터 정제
 
 * 원본 CSV의 상단 1~4행(`Description`, `Units`, `Plot Min`, `Plot Max`)은 적재 시 제외합니다.
+* 기본 ETL은 `NOx_train_*.csv`만 읽어 운영 `sensor_data`에 적재합니다.
 * `IGCC.CC.G1.ttfr1`은 유효 데이터가 매우 적어 분석/적재에서 제외합니다.
 * `Column1`은 전체 결측 컬럼으로 적재하지 않습니다.
-* 핵심 9개 컬럼 중 하나라도 결측이 있는 행은 제거합니다.
+* 운영 14개 컬럼 중 하나라도 결측이 있는 행은 제거합니다.
 * `measured_at`은 `TIMESTAMP`로 변환하며 변환 실패 행은 제거합니다.
+* 적재 시 `sensor_data`를 재생성하고 `measured_at`에 Primary Key를 부여합니다.
 
 ### 3.2. 적재 환경
 
@@ -68,61 +76,67 @@ EC2 검증 기준으로 train 데이터 적재 결과는 다음과 같습니다.
 
 ## 4. ERD 기준
 
-현재 실제 DB 연동이 확정된 테이블은 `sensor_data`와 `threshold_config`입니다.
-시뮬레이션 세션/입력/예측 로그 테이블은 백엔드 기능 확장 시 추가합니다.
+현재 실제 DB 연동이 확정된 테이블은 `sensor_data`입니다.
+`threshold_config`는 백엔드/디지털 트윈 코드의 `ThresholdConfig`를 단일 진실원으로 사용하므로 DB 테이블로 관리하지 않습니다.
+시뮬레이션 세션/입력/예측 로그 테이블은 백엔드 영속화 기능 확장 시 추가합니다.
 
 ```mermaid
 erDiagram
     SENSOR_DATA {
         timestamp measured_at PK
-        float nox_ppm
-        float dgan_offset
         float syngas_flow
-        float generator_output
+        float igv_opening
+        float n2_offset
+        float n2_valve_1
+        float syngas_srv
+        float syngas_gcv_1
+        float syngas_gcv_1a
+        float syngas_gcv_2
+        float ibh_valve
+        float n2_flow
+        float nox_ppm
+        float exhaust_temp
+        float power_mw
         float npr_primary
-        float ambient_temp
-        float dgan_flow
-        float igv
-    }
-
-    THRESHOLD_CONFIG {
-        bigint id PK
-        varchar metric
-        float limit_value
-        varchar unit
-        timestamp effective_from
-        timestamp effective_to
-        varchar source
     }
 
     SIMULATION_SESSION_LOG {
         bigint id PK
         varchar sid
-        varchar mode
         timestamp started_at
         timestamp ended_at
+        text notes
     }
 
     SIMULATION_INPUT_LOG {
         bigint id PK
         varchar sid
         timestamp created_at
-        float dgan_offset
-        float igv
+        float syngas_flow
+        float igv_opening
+        float n2_offset
+        float n2_valve_1
+        float syngas_srv
+        float syngas_gcv_1
+        float syngas_gcv_1a
+        float syngas_gcv_2
+        float ibh_valve
+        float n2_flow
     }
 
-    PREDICTION_LOG {
+    FORECAST_LOG {
         bigint id PK
         varchar sid
-        int target_minutes
         float predicted_nox
+        float predicted_exhaust_temp
+        float predicted_power_mw
         boolean threshold_exceeded
         timestamp target_time
         timestamp created_at
     }
 
     SIMULATION_SESSION_LOG ||--o{ SIMULATION_INPUT_LOG : sid
-    SIMULATION_SESSION_LOG ||--o{ PREDICTION_LOG : sid
+    SIMULATION_SESSION_LOG ||--o{ FORECAST_LOG : sid
 ```
 
 ---
@@ -187,5 +201,5 @@ erDiagram
 
 * Kafka 단계에서는 `NOx_test_20250825.csv`를 Producer 입력으로 사용하고, 운영 `sensor_data`에 섞어 적재하지 않습니다.
 * 모델 성능 개선을 위해 원천 컬럼을 추가 피처로 쓰게 되면, 먼저 ETL 컬럼 매핑과 백엔드 스키마 영향도를 검토한 뒤 `sensor_data` 확장 여부를 결정합니다.
-* 예측 결과를 DB에 저장해야 할 경우 `prediction_log` 테이블을 우선 확정합니다.
+* 예측 결과를 DB에 저장해야 할 경우 `forecast_log` 테이블을 우선 확정합니다.
 * 모든 신규 테이블은 백엔드 ORM 모델, ERD, DB 정의서를 함께 업데이트합니다.
