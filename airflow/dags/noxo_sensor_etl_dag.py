@@ -23,7 +23,9 @@ from database.load_to_postgres import (
 )
 
 
-load_dotenv(PROJECT_ROOT / ".env")
+dotenv_path = PROJECT_ROOT / ".env"
+if dotenv_path.is_file() and os.access(dotenv_path, os.R_OK):
+    load_dotenv(dotenv_path)
 
 
 def send_slack_message(text: str) -> None:

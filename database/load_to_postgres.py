@@ -9,6 +9,7 @@ from sqlalchemy import create_engine, text
 BASE_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_TARGET_FOLDER = BASE_DIR / "data" / "raw" / "250811-250825"
 DEFAULT_FILE_PATTERN = "NOx_train_*.csv"
+DEFAULT_CHUNK_SIZE = 50000
 TABLE_NAME = "sensor_data"
 
 COLUMN_MAPPING = {
@@ -51,11 +52,19 @@ def build_create_table_sql() -> str:
 
 
 def get_database_url() -> str:
-    load_dotenv()
+    try:
+        load_dotenv()
+    except PermissionError:
+        pass
+
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
         raise ValueError("[에러] DATABASE_URL 환경변수가 없습니다.")
     return database_url
+
+
+def get_chunk_size() -> int:
+    return int(os.getenv("ETL_CHUNK_SIZE", str(DEFAULT_CHUNK_SIZE)))
 
 
 def extract_sensor_csv(
@@ -101,6 +110,11 @@ def load_sensor_data(df: pd.DataFrame, database_url: str | None = None) -> None:
     with engine.begin() as conn:
         conn.execute(text(build_create_table_sql()))
 
+    append_sensor_data(df, engine)
+    print("[Load] PostgreSQL DB 적재가 끝났습니다.")
+
+
+def append_sensor_data(df: pd.DataFrame, engine) -> None:
     df.to_sql(
         name=TABLE_NAME,
         con=engine,
@@ -109,7 +123,6 @@ def load_sensor_data(df: pd.DataFrame, database_url: str | None = None) -> None:
         chunksize=10000,
         method="multi",
     )
-    print("[Load] PostgreSQL DB 적재가 끝났습니다.")
 
 
 def validate_sensor_data(database_url: str | None = None) -> dict:
@@ -153,9 +166,31 @@ def validate_sensor_data(database_url: str | None = None) -> dict:
 
 def run_pipeline() -> dict:
     database_url = get_database_url()
-    raw_df = extract_sensor_csv()
-    sensor_df = transform_sensor_data(raw_df)
-    load_sensor_data(sensor_df, database_url)
+    engine = create_engine(database_url)
+
+    with engine.begin() as conn:
+        conn.execute(text(build_create_table_sql()))
+
+    total_loaded = 0
+    file_list = sorted(DEFAULT_TARGET_FOLDER.glob(DEFAULT_FILE_PATTERN))
+    if not file_list:
+        raise FileNotFoundError(
+            f"[에러] CSV 파일을 찾을 수 없습니다: {DEFAULT_TARGET_FOLDER / DEFAULT_FILE_PATTERN}"
+        )
+
+    for file in file_list:
+        print(f"[Extract] chunk 단위로 데이터를 불러오는 중: {file.name}")
+        for raw_chunk in pd.read_csv(
+            file,
+            skiprows=[1, 2, 3, 4],
+            chunksize=get_chunk_size(),
+        ):
+            sensor_chunk = transform_sensor_data(raw_chunk)
+            append_sensor_data(sensor_chunk, engine)
+            total_loaded += len(sensor_chunk)
+            print(f"[Load] 누적 적재 행 수: {total_loaded}")
+
+    print("[Load] PostgreSQL DB 적재가 끝났습니다.")
     return validate_sensor_data(database_url)
 
 
