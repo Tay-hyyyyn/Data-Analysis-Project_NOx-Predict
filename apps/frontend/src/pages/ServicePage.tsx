@@ -5,12 +5,10 @@ import {
   CONTROL_VARIABLE_KEYS,
   type ConsoleMetrics,
   type MetricPoint,
-  type Mode,
   type VariableConfigUpdate,
   type VariableKey,
   variableSeed,
 } from '../features/dashboard/mockConsole'
-import { ForecastPanel } from '../features/dashboard/components/ForecastPanel'
 import { useConsoleState, type StreamStatus } from '../features/dashboard/useConsoleState'
 import { useThresholds, type Thresholds } from '../features/dashboard/useThresholds'
 import type { AppOutletContext } from '../app/App'
@@ -228,14 +226,7 @@ export function ServicePage() {
           </section>
         </div>
 
-        <aside className={isRealtimeMode ? 'sidebar sidebar-locked' : 'sidebar'}>
-          <SourceLabel mode={mode} overrideActive={state.overrideActive} />
-          {isRealtimeMode ? (
-            <div className="sidebar-lock-banner mono" role="status">
-              실시간 예측 모드 — 제어 잠금 (Kafka 추종 기반 5분 후 NOx 예측)
-            </div>
-          ) : null}
-          <ForecastPanel mode={mode} forecast={state.forecast} />
+        <aside className="sidebar">
           <div className="sidebar-section">
             <div className="sidebar-title">제어 변수 선택</div>
             <select
@@ -450,27 +441,6 @@ export function ServicePage() {
       ) : null}
     </main>
   )
-}
-
-function SourceLabel({
-  mode,
-  overrideActive,
-}: {
-  mode: Mode
-  overrideActive: boolean
-}) {
-  // 시뮬레이션 모드(override 없음)에서는 표시 안 함 — 실시간 데이터/예측과 무관한 상태이므로.
-  if (mode === 'realtime') {
-    return <span className="src-indicator src-realtime">● 실시간 예측 모드</span>
-  }
-  if (overrideActive) {
-    return (
-      <span className="src-indicator src-override">
-        ⏸ 사용자 고정 (Kafka 추종 정지)
-      </span>
-    )
-  }
-  return null
 }
 
 function SettingField({
