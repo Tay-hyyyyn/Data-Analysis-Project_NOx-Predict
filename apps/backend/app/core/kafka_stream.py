@@ -16,6 +16,7 @@ from typing import Any
 
 from app.config import Settings
 from app.core.sensor_csv import load_bootstrap_rows
+from app.domain.tags import normalize_raw_message
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,8 @@ class KafkaSensorStream:
         self._bootstrap_rows: list[dict[str, Any]] = []
         self._bootstrap_error: str | None = None
         self._bootstrap_loaded = False
+        # SensorBuffer 또는 None — attach_buffer로 주입
+        self._buffer: Any | None = None
 
     @property
     def enabled(self) -> bool:
@@ -66,9 +69,37 @@ class KafkaSensorStream:
             return Path(input_file).name
         return "NOx_test_20250825.csv"
 
-    async def start(self) -> None:
+    def ensure_bootstrap_loaded(self) -> None:
+        """bootstrap rows를 동기적으로 로드. 여러 번 호출해도 1회만 작동."""
         if not self._bootstrap_loaded:
             self._load_bootstrap_rows()
+
+    def attach_buffer(self, buffer: Any) -> None:
+        """consumer가 메시지 도착 시 normalize 후 buffer.append 호출."""
+        self._buffer = buffer
+
+    def _route_record(self, record: Any) -> None:
+        """record를 _latest에 저장하고, buffer 부착되어 있으면 정규화 후 append.
+
+        consume loop와 단위 테스트 양쪽에서 호출되는 공용 헬퍼.
+        """
+        self._latest = {
+            "topic": getattr(record, "topic", self.topic),
+            "partition": getattr(record, "partition", 0),
+            "offset": getattr(record, "offset", 0),
+            "key": getattr(record, "key", None),
+            "received_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "message": record.value,
+        }
+        self._last_error = None
+        if self._buffer is not None:
+            raw_values = record.value.get("values") or {}
+            normalized = normalize_raw_message(raw_values)
+            if normalized:
+                self._buffer.append(normalized)
+
+    async def start(self) -> None:
+        self.ensure_bootstrap_loaded()
 
         if not self.enabled or self._task is not None:
             return
@@ -121,16 +152,7 @@ class KafkaSensorStream:
         try:
             while self._stop_event is not None and not self._stop_event.is_set():
                 for record in consumer:
-                    self._latest = {
-                        "topic": record.topic,
-                        "partition": record.partition,
-                        "offset": record.offset,
-                        "key": record.key,
-                        "received_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-                        "message": record.value,
-                    }
-                    self._last_error = None
-
+                    self._route_record(record)
                     if self._stop_event is not None and self._stop_event.is_set():
                         break
         finally:

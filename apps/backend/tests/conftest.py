@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import joblib
 import numpy as np
@@ -25,6 +26,19 @@ def app():
 def client(app):
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture
+def settings_with_csv():
+    """KafkaSensorStream용 settings mock. bootstrap CSV는 기본 경로 사용."""
+    settings = MagicMock()
+    settings.kafka_stream_enabled = False
+    settings.kafka_bootstrap_servers = "localhost:19092"
+    settings.kafka_sensor_topic = "noxo.sensor.raw"
+    settings.kafka_consumer_group_id = "test"
+    settings.kafka_bootstrap_minutes = 15
+    settings.kafka_bootstrap_file = None
+    return settings
 
 
 # ============================================================
