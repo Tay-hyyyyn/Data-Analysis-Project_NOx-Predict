@@ -1,5 +1,13 @@
 # Database 작업 가이드
 
+production DB와 schema 정합성을 지킨다. 컬럼명은 `digital_twin/simulation/state.py::ControlVars`와 1:1 매핑되며 DB 팀 협의 없이 변경 금지.
+
+<!--
+== Tradeoff (카파시 원칙 #17) ==
+컬럼명을 도메인 식별자와 1:1로 묶으면 DB만 빠르게 진화시킬 자유를 포기하는 대신 어댑터 매핑 코드 폭증을 막는다.
+임계 SoT를 코드(`digital_twin/simulation/config.py`)로 옮기면 DBA가 SQL로 조정할 편의를 포기하는 대신 임계 변경 이력이 git에 남는다.
+-->
+
 <!--
 이 가이드는 에이전트가 database 영역에서 코드를 건드리기 전에 반드시 알아야 할 컨텍스트를 담는다.
 CLAUDE.md는 `@./AGENTS.md` 한 줄로 이 파일을 import 한다.

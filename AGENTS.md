@@ -1,5 +1,13 @@
 # NOxO Project - Claude/Codex/Antigravity/Cursor 작업 지침
 
+시스템은 backend·digital_twin·database 3축으로 SoT가 분산돼 있다. 영역 간 컨트랙트(컬럼명·schema·임계치)는 협의 없이 임의 변경 금지.
+
+<!--
+== Tradeoff (카파시 원칙 #17) ==
+3축 SoT 분산은 영역별 책임 명료화를 얻는 대신 동기화 비용을 부담한다.
+컬럼명/임계/스키마 변경은 항상 cross-영역 PR 게이트(`[DB 협의 필요]`, `[API 임시]`)로 진행한다.
+-->
+
 <!--
 이 파일은 map 역할을 한다. 작업 시 해당 영역의 AGENTS.md를 먼저 읽고 진행한다.
 CLAUDE.md는 `@./AGENTS.md` 한 줄로 이 파일을 import 한다 (단일 진실 공급원).

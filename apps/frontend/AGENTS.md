@@ -1,5 +1,13 @@
 # Frontend 작업 가이드
 
+백엔드 API 컨트랙트와 도메인 변수명(`exhaust_temp` 등)에서의 schema drift를 막는다. 추측·`any`·임의 변경 금지.
+
+<!--
+== Tradeoff (카파시 원칙 #17) ==
+hook 단위로 API를 캡슐화하면 단순한 fetch 호출 1줄 편의를 포기하는 대신 schema drift 격리·테스트 가능성을 얻는다.
+타입을 backend Pydantic schema와 1:1로 묶으면 클라이언트만 빠르게 진화시킬 자유를 포기하는 대신 422/500 런타임 실패를 컴파일 타임으로 옮긴다.
+-->
+
 <!--
 이 가이드는 에이전트가 frontend 영역에서 코드를 건드리기 전에 반드시 알아야 할 컨텍스트를 담는다.
 CLAUDE.md는 `@./AGENTS.md` 한 줄로 이 파일을 import 한다.

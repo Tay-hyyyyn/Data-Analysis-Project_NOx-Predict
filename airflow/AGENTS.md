@@ -1,5 +1,13 @@
 # Airflow 작업 가이드
 
+production 데이터 파이프라인의 멱등성과 자격 증명 안전을 지킨다. 하드코딩·sub-DAG 미검토 배포·전체 backfill이 가장 큰 위험.
+
+<!--
+== Tradeoff (카파시 원칙 #17) ==
+staging→production 단계 검증을 강제하면 hotfix 속도를 포기하는 대신 ETL 버그의 운영 데이터 오염을 차단한다.
+secrets를 Connections/Variables로 분리하면 DAG 파일 한 줄 편의를 포기하는 대신 자격 증명 유출 경로를 봉쇄한다.
+-->
+
 <!--
 이 가이드는 에이전트가 airflow 영역에서 코드를 건드리기 전에 반드시 알아야 할 컨텍스트를 담는다.
 CLAUDE.md는 `@./AGENTS.md` 한 줄로 이 파일을 import 한다.
