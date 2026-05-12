@@ -14,6 +14,7 @@ from app.adapters.forecaster import StubForecaster
 from app.adapters.simulator import StubSimulator
 from app.config import get_settings
 from app.core.input_injector import InputInjector
+from app.core.kafka_stream import KafkaSensorStream
 from app.core.logging import configure_logging
 from app.core.sim_loop import SimLoopManager
 from app.core.state_store import InMemoryStateStore
@@ -34,6 +35,7 @@ async def lifespan(app: FastAPI):
     # 두 어댑터 별도 DI 슬롯 — `BACKEND_ARCHITECTURE.md §10`
     simulator = StubSimulator()
     forecaster = StubForecaster()
+    kafka_sensor_stream = KafkaSensorStream(settings)
     sim_loop = SimLoopManager(
         settings=settings,
         state_store=state_store,
@@ -48,10 +50,14 @@ async def lifespan(app: FastAPI):
     app.state.ws_manager = ws_manager
     app.state.simulator = simulator
     app.state.forecaster = forecaster
+    app.state.kafka_sensor_stream = kafka_sensor_stream
     app.state.sim_loop = sim_loop
+
+    await kafka_sensor_stream.start()
 
     try:
         yield
     finally:
+        await kafka_sensor_stream.stop()
         await sim_loop.stop_all()
         DbContext.dispose()
