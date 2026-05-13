@@ -11,6 +11,32 @@ from typing import Any
 
 import pandas as pd
 
+from digital_twin.simulation import DEFAULT_CONFIG
+from digital_twin.simulation.config import OperatingPoint
+
+
+def operating_point_to_sensor_row(op: OperatingPoint | None = None) -> dict[str, float]:
+    """OperatingPoint → SensorBuffer 호환 도메인 키 dict (제어 10 + exhaust_temp).
+
+    lifespan fallback / RealtimeEngine stale fallback의 단일 SoT.
+    외란 매핑 미완(DISTURBANCE_TAGS={})이라 본 row는 외란 28개를 포함하지 않으며,
+    SessionContext.from_snapshot이 0.0 폴백으로 자연 채움.
+    """
+    op = op or DEFAULT_CONFIG.operating_point
+    return {
+        "syngas_flow": op.syngas_flow,
+        "igv_opening": op.igv_opening,
+        "n2_offset": op.n2_offset,
+        "n2_valve_1": op.n2_valve_1,
+        "syngas_srv": op.syngas_srv,
+        "syngas_gcv_1": op.syngas_gcv_1,
+        "syngas_gcv_1a": op.syngas_gcv_1a,
+        "syngas_gcv_2": op.syngas_gcv_2,
+        "ibh_valve": op.ibh_valve,
+        "n2_flow": op.n2_flow,
+        "exhaust_temp": op.exhaust_temp,
+    }
+
 
 class SensorBuffer:
     """1초 tick 센서 데이터의 sliding window (maxlen 행)."""

@@ -6,6 +6,7 @@ mode + control_override 상태를 보유. SimulationState는 기존대로 유지
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
@@ -38,12 +39,19 @@ class Session:
         self._touch()
 
     def set_override(self, controls: ControlVars) -> None:
-        """사용자 제어값 고정. realtime 모드에서는 거부."""
+        """사용자 제어값 고정. realtime 모드에서는 거부.
+
+        spec §2.1 — 사용자 입력 즉시 ML 호출 게이트 활성화:
+        pending_input_flag + last_input_t를 세팅해 MLSimulator._should_call_ml의
+        debounce(1s) 분기를 통과시킨다.
+        """
         if self.mode == "realtime":
             raise SessionModeConflictError(
                 f"control disabled in realtime mode (sid={self.sid})"
             )
         self.control_override = controls
+        self.context.pending_input_flag = True
+        self.context.last_input_t = time.monotonic()
         self._touch()
 
     def clear_override(self) -> None:

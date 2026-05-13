@@ -15,9 +15,10 @@ from typing import Any
 from app.adapters.forecaster import Forecaster, ForecastInput
 from app.adapters.simulator import Simulator
 from app.config import Settings
-from app.core.sensor_buffer import SensorBuffer
+from app.core.sensor_buffer import SensorBuffer, operating_point_to_sensor_row
 from app.core.session import Session
 from app.core.ws_manager import WebSocketManager
+from app.domain.tags import control_vars_to_tag_dict, denormalize_to_raw_tags
 from digital_twin.simulation import (
     DEFAULT_CONFIG,
     ControlVars,
@@ -76,17 +77,18 @@ class RealtimeEngine:
 
     async def _run_forever(self) -> None:
         try:
-            loop = asyncio.get_event_loop()
-            next_deadline = loop.time()
+            loop = asyncio.get_running_loop()
+            next_deadline = loop.time() + self.tick_interval
             while self._stop_event is not None and not self._stop_event.is_set():
                 await self._tick()
-                # deadline 기반 — _tick 처리 시간만큼 sleep 단축해 drift 방지
-                next_deadline += self.tick_interval
-                delay = max(0.0, next_deadline - loop.time())
-                if delay == 0.0:
-                    # 처리가 tick보다 느리면 다음 deadline을 현재 시각으로 리셋
-                    next_deadline = loop.time()
-                await asyncio.sleep(delay)
+                now = loop.time()
+                # 처리가 한 tick 이상 밀린 경우만 deadline 리셋 (drift 누적 방지).
+                # 정상 경로(now ≤ next_deadline)는 누적 deadline 유지 → 평균 drift 0.
+                if now > next_deadline + self.tick_interval:
+                    next_deadline = now + self.tick_interval
+                else:
+                    next_deadline += self.tick_interval
+                await asyncio.sleep(max(0.0, next_deadline - loop.time()))
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -115,20 +117,7 @@ class RealtimeEngine:
 
     def _stale_fallback_row(self) -> dict[str, Any]:
         """SensorBuffer가 완전히 빈 경우의 최종 폴백 — operating_point 기반."""
-        op = self.dt_config.operating_point
-        return {
-            "syngas_flow": op.syngas_flow,
-            "igv_opening": op.igv_opening,
-            "n2_offset": op.n2_offset,
-            "n2_valve_1": op.n2_valve_1,
-            "syngas_srv": op.syngas_srv,
-            "syngas_gcv_1": op.syngas_gcv_1,
-            "syngas_gcv_1a": op.syngas_gcv_1a,
-            "syngas_gcv_2": op.syngas_gcv_2,
-            "ibh_valve": op.ibh_valve,
-            "n2_flow": op.n2_flow,
-            "exhaust_temp": op.exhaust_temp,
-        }
+        return operating_point_to_sensor_row(self.dt_config.operating_point)
 
     async def _step_and_broadcast(
         self, sid: str, session: Session, kafka_row: dict[str, Any],
@@ -164,9 +153,13 @@ class RealtimeEngine:
             input_controls = kafka_controls
             override_active = False
 
-        # 2. SessionContext.recent_df_buffer 갱신 (외란 + 사용된 제어)
-        synthesized = self._synthesize_row(kafka_row, input_controls)
-        session.context.recent_df_buffer.append(synthesized)
+        # 2. SessionContext.recent_df_buffer 갱신 (외란 + 사용된 제어).
+        # H4 — realtime + stream_stale: fallback row가 매 tick 누적되어 학습 분포를
+        # 평탄화시키므로 append skip. sim 모드는 자기재생이라 유지.
+        skip_buffer_append = stream_stale and session.mode == "realtime"
+        if not skip_buffer_append:
+            synthesized = self._synthesize_row(kafka_row, input_controls, session)
+            session.context.recent_df_buffer.append(synthesized)
 
         # 3. DT current 추론 + lambda_/efficiency 후처리
         ml_outputs = self.simulator.predict_for_session(
@@ -248,19 +241,25 @@ class RealtimeEngine:
         )
 
     def _synthesize_row(
-        self, kafka_row: dict[str, Any], input_controls: ControlVars
+        self,
+        kafka_row: dict[str, Any],
+        input_controls: ControlVars,
+        session: Session,
     ) -> dict[str, Any]:
-        """외란(kafka) + input_controls 합쳐 한 행 dict 반환 — recent_df_buffer용.
+        """외란(plant_context) + kafka 도메인값 + input_controls 합쳐 한 행 dict 반환.
 
-        SessionContext.recent_df_buffer는 원천 태그(IGCC.*) 네임스페이스로 운영된다
-        (RAW_FEATURES + TTXM). kafka_row는 normalize_raw_message가 만든 도메인
-        snake_case이므로 denormalize로 되돌리고, 제어값은 control_vars_to_tag_dict로
-        덮어쓴다. measured_at 등 비태그 키는 제거(원천 태그 dict로만).
+        SessionContext.recent_df_buffer는 원천 태그(IGCC.*) 네임스페이스(RAW 39 + TTXM).
+        외란 매핑 미완(DISTURBANCE_TAGS={})이라 kafka_row에는 제어 10 + 출력 3밖에
+        없으므로 plant_context(스냅샷 시점 외란 29 + TTXM)를 베이스로 깔고
+        kafka 도메인값(denormalize) → input_controls 순으로 덮어쓴다.
+        이렇게 해야 deque(maxlen=900)가 evict된 뒤에도 RAW 39 + TTXM 컬럼이 보존되어
+        dt_predict의 recent_df 요구를 충족한다.
         """
-        from app.domain.tags import control_vars_to_tag_dict, denormalize_to_raw_tags
-
-        merged_raw = denormalize_to_raw_tags(
-            {k: v for k, v in kafka_row.items() if k != "measured_at"}
+        merged_raw = dict(session.context.plant_context)
+        merged_raw.update(
+            denormalize_to_raw_tags(
+                {k: v for k, v in kafka_row.items() if k != "measured_at"}
+            )
         )
         merged_raw.update(control_vars_to_tag_dict(input_controls))
         return merged_raw

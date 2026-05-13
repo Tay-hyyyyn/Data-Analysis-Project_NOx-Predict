@@ -26,7 +26,8 @@ def _make_buffer() -> SensorBuffer:
             "n2_valve_1": 50.0, "syngas_srv": 60.0, "syngas_gcv_1": 55.0,
             "syngas_gcv_1a": 55.0, "syngas_gcv_2": 55.0, "ibh_valve": 30.0,
             "n2_flow": 100.0, "exhaust_temp": 580.0,
-            "measured_at": "2025-08-25T00:00:00Z",
+            # spec §2.2 — 이미 정규화된 UTC ISO 8601 + Z (lifespan/kafka_stream이 normalize 후 적재)
+            "measured_at": "2025-08-25T00:00:00.000Z",
         }
     ])
     return buf
@@ -135,7 +136,7 @@ async def test_e2e_tick_preserves_kafka_measured_at_with_override():
     payload = ws.broadcast.call_args[0][1]
     assert payload["override_active"] is True
     assert payload["kafka_latest"] is not None
-    assert payload["kafka_latest"]["ts"] == "2025-08-25T00:00:00Z"
+    assert payload["kafka_latest"]["ts"] == "2025-08-25T00:00:00.000Z"
     # kafka_latest는 override 이전 원시값 — 1500.0 (override는 1700.0)
     assert payload["kafka_latest"]["controls"]["syngas_flow"] == 1500.0
     assert payload["current"]["controls"]["syngas_flow"] == 1700.0
@@ -194,3 +195,108 @@ async def test_e2e_synthesize_row_uses_raw_tag_namespace():
     assert "IGCC.CC.G1.csgv" in last_row
     assert "syngas_flow" not in last_row
     assert "igv_opening" not in last_row
+
+
+@pytest.mark.asyncio
+async def test_e2e_synthesize_row_preserves_plant_context_disturbance_columns():
+    """2차 B1 회귀 — recent_df_buffer가 RAW 39 + TTXM 컬럼 보존 (외란 28개 포함).
+
+    plant_context가 0.0 폴백한 외란 컬럼도 _synthesize_row가 베이스로 깔아 보존.
+    deque(maxlen=900) evict 후에도 dt_predict의 recent_df 요구를 충족해야 함.
+    """
+    from digital_twin.preprocess import RAW_FEATURES
+
+    buf = _make_buffer()
+    session = _make_session(mode="sim")
+    sessions = {"e2e-sid": session}
+    ws = AsyncMock()
+
+    engine = RealtimeEngine(
+        settings=Settings(),
+        sensor_buffer=buf,
+        simulator=StubSimulator(),
+        forecaster=StubForecaster(),
+        ws_manager=ws,
+        sessions=sessions,
+    )
+    await engine._tick()
+
+    last_row = session.context.recent_df_buffer[-1]
+    # RAW_FEATURES 39개 + TTXM 1개 = 40개 컬럼이 모두 존재
+    for col in RAW_FEATURES:
+        assert col in last_row, f"missing column in synthesized row: {col}"
+    assert "IGCC.CC.G1.TTXM" in last_row
+
+
+@pytest.mark.asyncio
+async def test_e2e_submit_control_sets_pending_input_flag():
+    """2차 H1 회귀 — Session.set_override가 pending_input_flag + last_input_t set.
+
+    spec §2.1 — 사용자 제어 입력 후 debounce 1초 경과 시 ML 즉시 호출 가능.
+    """
+    from digital_twin.simulation import ControlVars
+
+    session = _make_session(mode="sim")
+    assert session.context.pending_input_flag is False
+    assert session.context.last_input_t == 0.0
+
+    session.set_override(ControlVars(
+        syngas_flow=1700.0, igv_opening=80.0, n2_offset=210.0, n2_valve_1=55.0,
+        syngas_srv=62.0, syngas_gcv_1=56.0, syngas_gcv_1a=56.0, syngas_gcv_2=56.0,
+        ibh_valve=32.0, n2_flow=110.0,
+    ))
+
+    assert session.context.pending_input_flag is True
+    assert session.context.last_input_t > 0.0
+
+
+@pytest.mark.asyncio
+async def test_e2e_realtime_stale_skips_buffer_append():
+    """2차 H4 회귀 — realtime + stale: fallback row가 buffer에 누적되지 않음."""
+    buf = SensorBuffer(maxlen=10)  # 비어있음 → stale
+    session = _make_session(mode="realtime")
+    sessions = {"e2e-sid": session}
+    ws = AsyncMock()
+    initial_len = len(session.context.recent_df_buffer)
+
+    engine = RealtimeEngine(
+        settings=Settings(),
+        sensor_buffer=buf,
+        simulator=StubSimulator(),
+        forecaster=StubForecaster(),
+        ws_manager=ws,
+        sessions=sessions,
+    )
+    await engine._tick()
+    await engine._tick()
+    await engine._tick()
+
+    # realtime + stream stale 3 tick → buffer는 변화 없음
+    assert len(session.context.recent_df_buffer) == initial_len
+    # 그래도 broadcast는 stale warning과 함께 발생
+    assert ws.broadcast.call_count == 3
+    payload = ws.broadcast.call_args[0][1]
+    assert payload["warning"] == "kafka stream stale"
+
+
+@pytest.mark.asyncio
+async def test_e2e_sim_stale_continues_buffer_append():
+    """2차 H4 회귀 — sim 모드는 stale에도 fallback row를 buffer에 push (자기재생)."""
+    buf = SensorBuffer(maxlen=10)  # 비어있음 → stale
+    session = _make_session(mode="sim")
+    sessions = {"e2e-sid": session}
+    ws = AsyncMock()
+    initial_len = len(session.context.recent_df_buffer)
+
+    engine = RealtimeEngine(
+        settings=Settings(),
+        sensor_buffer=buf,
+        simulator=StubSimulator(),
+        forecaster=StubForecaster(),
+        ws_manager=ws,
+        sessions=sessions,
+    )
+    await engine._tick()
+    await engine._tick()
+
+    assert len(session.context.recent_df_buffer) == initial_len + 2

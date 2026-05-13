@@ -12,7 +12,11 @@ from app.core.sensor_buffer import SensorBuffer
 from app.core.session import Session
 from app.core.session_context import SessionContext
 from app.core.ws_manager import WebSocketManager
-from app.domain.tags import DEFAULT_CONTROL_BOUNDS, validate_control
+from app.domain.tags import (
+    DEFAULT_CONTROL_BOUNDS,
+    control_vars_from_tag_dict,
+    validate_control,
+)
 from app.exceptions import (
     DataNotEnoughError,
     InvalidControlInputError,
@@ -76,43 +80,17 @@ class SessionService:
 
         ML 게이트(interval 60s)가 첫 tick에서 False여도 RealtimeEngine이 cached값을
         반환할 수 있도록 invariant를 만족시킨다. simulator 미주입 시(테스트 환경)는 skip.
+
+        외란 매핑(DISTURBANCE_TAGS) 미완 단계에서는 plant_context의 외란 28개가
+        SessionContext.from_snapshot의 0.0 폴백으로 채워질 수 있음. warm-up 자체는
+        cached invariant 보장이 우선이므로 분포 외 cached여도 무음만 면하면 OK.
+        외란 매핑 완성 후에는 자연 정상화.
         """
         if self.simulator is None:
             return
-        initial_controls = ControlVars(
-            syngas_flow=session.context.initial_controls.get(
-                "IGCC.CC.G1.ca_fqsg_cl", 1500.0
-            ),
-            igv_opening=session.context.initial_controls.get(
-                "IGCC.CC.G1.csgv", 75.0
-            ),
-            n2_offset=session.context.initial_controls.get(
-                "IGCC.CC.G1.NQKR3_MONITOR", 200.0
-            ),
-            n2_valve_1=session.context.initial_controls.get(
-                "IGCC.CC.G1.nicvs1", 50.0
-            ),
-            syngas_srv=session.context.initial_controls.get(
-                "IGCC.CC.G1.FSAGR", 60.0
-            ),
-            syngas_gcv_1=session.context.initial_controls.get(
-                "IGCC.CC.G1.FSAG11", 55.0
-            ),
-            syngas_gcv_1a=session.context.initial_controls.get(
-                "IGCC.CC.G1.FSAG11A", 55.0
-            ),
-            syngas_gcv_2=session.context.initial_controls.get(
-                "IGCC.CC.G1.FSAG12", 55.0
-            ),
-            ibh_valve=session.context.initial_controls.get(
-                "IGCC.CC.G1.CSBHX", 30.0
-            ),
-            n2_flow=session.context.initial_controls.get(
-                "IGCC.CC.G1.NQJ", 100.0
-            ),
-        )
-        # ML 게이트 우회 — interval 강제 통과
-        session.context.pending_input_flag = True
+        # initial_controls는 from_snapshot이 CONTROL_TAGS 10개를 모두 채우므로 안전.
+        initial_controls = control_vars_from_tag_dict(session.context.initial_controls)
+        session.context.pending_input_flag = True  # ML 게이트 강제 통과
         try:
             self.simulator.predict_for_session(initial_controls, session.context)
         except SessionTerminatedError as exc:

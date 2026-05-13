@@ -20,7 +20,8 @@ from app.config import get_settings
 from app.core.kafka_stream import KafkaSensorStream
 from app.core.logging import configure_logging
 from app.core.realtime_engine import RealtimeEngine
-from app.core.sensor_buffer import SensorBuffer
+from app.core.sensor_buffer import SensorBuffer, operating_point_to_sensor_row
+from app.core.sensor_csv import normalize_measured_at
 from app.core.session import Session
 from app.core.ws_manager import WebSocketManager
 from app.db.session import DbContext
@@ -80,7 +81,8 @@ async def lifespan(app: FastAPI):
         normalized = normalize_raw_message(values)
         if not normalized:
             continue
-        measured_at = row.get("measured_at")
+        # spec §2.2 L274 — UTC ISO 8601 + Z로 정규화한 뒤 적재.
+        measured_at = normalize_measured_at(row.get("measured_at"))
         if measured_at is not None:
             normalized = {**normalized, "measured_at": measured_at}
         normalized_bootstrap.append(normalized)
@@ -89,24 +91,8 @@ async def lifespan(app: FastAPI):
         logger.info("SensorBuffer bootstrap loaded rows=%d", len(normalized_bootstrap))
     else:
         # bootstrap 실패 시 dt_config.operating_point로 기본 row 1개 주입.
-        # SessionContext.from_sensor_buffer가 ValueError를 던지지 않도록 보장
-        # (실시간 데이터 들어오면 자연 덮어쓰기 — H5 가드).
-        from digital_twin.simulation import DEFAULT_CONFIG
-        op = DEFAULT_CONFIG.operating_point
-        fallback_row = {
-            "syngas_flow": op.syngas_flow,
-            "igv_opening": op.igv_opening,
-            "n2_offset": op.n2_offset,
-            "n2_valve_1": op.n2_valve_1,
-            "syngas_srv": op.syngas_srv,
-            "syngas_gcv_1": op.syngas_gcv_1,
-            "syngas_gcv_1a": op.syngas_gcv_1a,
-            "syngas_gcv_2": op.syngas_gcv_2,
-            "ibh_valve": op.ibh_valve,
-            "n2_flow": op.n2_flow,
-            "exhaust_temp": op.exhaust_temp,
-        }
-        sensor_buffer.load_bootstrap([fallback_row])
+        # SessionContext.from_sensor_buffer가 ValueError를 던지지 않도록 보장.
+        sensor_buffer.load_bootstrap([operating_point_to_sensor_row()])
         logger.warning(
             "SensorBuffer bootstrap empty — injected operating_point fallback row"
         )

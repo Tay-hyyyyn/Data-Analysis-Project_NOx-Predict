@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import Settings
-from app.core.sensor_csv import load_bootstrap_rows
+from app.core.sensor_csv import load_bootstrap_rows, normalize_measured_at
 from app.domain.tags import normalize_raw_message
 
 logger = logging.getLogger(__name__)
@@ -98,7 +98,8 @@ class KafkaSensorStream:
             if normalized:
                 # measured_at은 도메인 키 매핑에 들지 않지만 RealtimeEngine이
                 # kafka_latest.ts로 직접 참조하므로 동일 dict에 보존.
-                measured_at = record.value.get("measured_at")
+                # spec §2.2 L274 — UTC ISO 8601 + Z로 정규화한 뒤 적재.
+                measured_at = normalize_measured_at(record.value.get("measured_at"))
                 if measured_at is not None:
                     normalized = {**normalized, "measured_at": measured_at}
                 self._buffer.append(normalized)
