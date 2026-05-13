@@ -101,7 +101,7 @@ export function ServicePage() {
               emphatic
             />
             <KpiCard
-              title="배기온도 (TTXM)"
+              title="배기온도"
               value={state.metrics.exhaust}
               unit="°C"
               status={exhaustStatus(state.metrics.exhaust, thresholds)}
@@ -117,7 +117,7 @@ export function ServicePage() {
               emphatic
             />
             <KpiCard
-              title="공기비 (λ)"
+              title="공기비"
               value={state.metrics.lambda}
               unit=""
               status={lambdaStatus(state.metrics.lambda, thresholds)}
@@ -173,7 +173,7 @@ export function ServicePage() {
             <section className="panel chart-card">
               <header className="chart-header">
                 <div>
-                  <div className="chart-title">배기온도 / 공기비 (λ)</div>
+                  <div className="chart-title">배기온도 / 공기비</div>
                   <div className="chart-subtitle">정규화 · 최근 60s</div>
                 </div>
                 <div className="chart-legend mono">
