@@ -3,9 +3,11 @@ import {
   appendHistory,
   applyVariableStep,
   CONTROL_VARIABLE_KEYS,
+  createStateFromPayload,
   createStateFromSnapshot,
   createInitialConsoleState,
   deriveMetrics,
+  safeParseRealtimePayload,
   type BackendConsoleSnapshot,
   type ConsoleState,
   type Mode,
@@ -33,9 +35,6 @@ export type StreamStatus =
 const RECONNECT_DELAYS_MS = [1000, 2000, 4000] // exponential backoff 최대 3회
 const NORMAL_CLOSE_CODES = new Set([1000]) // 명시적 stop / 정상 종료
 const ACTIVE_SESSION_STORAGE_KEY = 'noxo.activeSessionId'
-// 5분 horizon 예측 폴링 주기 — WS 스트림과 동일한 1Hz로 갱신해 차트와 동조.
-// 예측 자체는 5분 후 값이지만 표시 주기는 사용자 체감을 위해 실시간과 맞춘다.
-const PREDICTION_POLL_INTERVAL_MS = 1_000
 
 export function useConsoleState(mode: Mode) {
   const tickRef = useRef(0)
@@ -66,14 +65,14 @@ export function useConsoleState(mode: Mode) {
   const startMockLoop = useCallback(() => {
     stopMockLoop()
     setStatus('mock')
-    // mock 모드에서는 차트 첫 렌더부터 자연스럽게 보이도록 seed history로 백필.
+    // mock 모드는 항상 sim 모드 + override=false로 작동 — realtime 토글은 backend 연동 전제.
     setState((current) =>
       current.history.length > 0 ? current : createInitialConsoleState(true),
     )
     mockTimerRef.current = window.setInterval(() => {
       tickRef.current += 1
       setState((current) => {
-        const metrics = deriveMetrics(current.variables, mode, tickRef.current)
+        const metrics = deriveMetrics(current.variables, 'sim', tickRef.current)
         return {
           ...current,
           metrics,
@@ -81,7 +80,7 @@ export function useConsoleState(mode: Mode) {
         }
       })
     }, 1000)
-  }, [mode, stopMockLoop])
+  }, [stopMockLoop])
 
   const cancelReconnect = useCallback(() => {
     if (reconnectTimerRef.current !== null) {
@@ -120,14 +119,14 @@ export function useConsoleState(mode: Mode) {
 
       socket.onmessage = (event) => {
         tickRef.current += 1
-        const snapshot = safeParseSnapshot(event.data)
-        if (!snapshot) return
+        const payload = safeParseRealtimePayload(event.data)
+        if (!payload) return
 
         setState((current) => {
-          const next = createStateFromSnapshot(snapshot, current)
+          const next = createStateFromPayload(payload, current)
           return {
             ...next,
-            history: appendHistory(next.history, next.metrics, tickRef.current),
+            history: appendHistory(next.history, next.metrics, payload.tick),
           }
         })
       }
@@ -186,38 +185,6 @@ export function useConsoleState(mode: Mode) {
   useEffect(() => {
     scheduleReconnectRef.current = scheduleReconnect
   }, [scheduleReconnect])
-
-  // 예측 모드 — 활성 sid 기준 5분 horizon 예측을 주기적으로 갱신.
-  // mock/disconnected/sim 모드에서는 동작하지 않는다.
-  useEffect(() => {
-    if (!enableBackend || mode !== 'pred') return
-
-    let cancelled = false
-    let timer: number | null = null
-
-    async function tick() {
-      const sid = sessionIdRef.current
-      if (!sid) return
-      try {
-        const result = await fetchPrediction(sid)
-        if (cancelled || result === null) return
-        setState((current) => ({
-          ...current,
-          metrics: { ...current.metrics, predictedNox: result.predictedNox },
-        }))
-      } catch (error) {
-        console.warn('prediction fetch failed', error)
-      }
-    }
-
-    void tick()
-    timer = window.setInterval(() => void tick(), PREDICTION_POLL_INTERVAL_MS)
-
-    return () => {
-      cancelled = true
-      if (timer !== null) window.clearInterval(timer)
-    }
-  }, [enableBackend, mode])
 
   useEffect(() => {
     if (!enableBackend) return
@@ -291,91 +258,141 @@ export function useConsoleState(mode: Mode) {
         void stopSession(sid)
       }
     }
-  }, [connectStream, disconnectStream, enableBackend, mode, startMockLoop, stopMockLoop])
+    // 의도: mode 전환은 POST /api/session/{sid}/mode로 처리한다(setMode 액션).
+    // mode를 deps에 두면 토글마다 세션이 재생성되어 status가 live→connecting→live로 깜빡이고
+    // 누적된 시계열도 리셋되므로 의존성에서 제외한다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectStream, disconnectStream, enableBackend, startMockLoop, stopMockLoop])
 
-  return {
-    state,
-    status,
-    setActiveVar: (activeVar: VariableKey) =>
-      setState((current) => ({ ...current, activeVar })),
-    updateActiveVariableConfig: (update: VariableConfigUpdate) =>
-      setState((current) => {
-        const active = current.variables[current.activeVar]
-        // 백엔드 DEFAULT_CONTROL_BOUNDS와 동일한 seed 한계가 절대 상한.
-        // 이 콘솔의 모달은 운영자 개인 가드레일 — 백엔드 한계를 넘어설 수 없다.
-        const seed = variableSeed[current.activeVar]
-        const lo = Math.max(seed.min, Math.min(update.min, update.max))
-        const hi = Math.min(seed.max, Math.max(update.min, update.max))
-        const nextMin = Math.min(lo, hi)
-        const nextMax = Math.max(lo, hi)
-        const nextValue = roundForDigits(
-          Math.min(nextMax, Math.max(nextMin, active.value)),
-          active.digits,
-        )
+  // 액션 함수들은 매 렌더 새 참조가 되면 ServicePage의 useEffect[mode, notifyBackendMode]가
+  // 매 tick 발화되어 /mode 무한 호출 + /control 누락이 발생한다. useCallback + stateRef로
+  // stable identity 유지. state.variables가 필요한 액션은 stateRef를 통해 최신값 접근.
+  const stateRef = useRef(state)
+  useEffect(() => {
+    stateRef.current = state
+  }, [state])
 
-        return {
-          ...current,
-          variables: {
-            ...current.variables,
-            [current.activeVar]: {
-              ...active,
-              min: roundForDigits(nextMin, active.digits),
-              max: roundForDigits(nextMax, active.digits),
-              step: roundForDigits(Math.max(update.step, 0), active.digits),
-              value: nextValue,
-            },
-          },
-        }
-      }),
-    restoreActiveVariableDefaults: () =>
-      setState((current) => ({
+  const setActiveVar = useCallback((activeVar: VariableKey) => {
+    setState((current) => ({ ...current, activeVar }))
+  }, [])
+
+  const updateActiveVariableConfig = useCallback((update: VariableConfigUpdate) => {
+    setState((current) => {
+      const active = current.variables[current.activeVar]
+      // 백엔드 DEFAULT_CONTROL_BOUNDS와 동일한 seed 한계가 절대 상한.
+      // 이 콘솔의 모달은 운영자 개인 가드레일 — 백엔드 한계를 넘어설 수 없다.
+      const seed = variableSeed[current.activeVar]
+      const lo = Math.max(seed.min, Math.min(update.min, update.max))
+      const hi = Math.min(seed.max, Math.max(update.min, update.max))
+      const nextMin = Math.min(lo, hi)
+      const nextMax = Math.max(lo, hi)
+      const nextValue = roundForDigits(
+        Math.min(nextMax, Math.max(nextMin, active.value)),
+        active.digits,
+      )
+
+      return {
         ...current,
         variables: {
           ...current.variables,
           [current.activeVar]: {
-            ...current.variables[current.activeVar],
-            min: variableSeed[current.activeVar].min,
-            max: variableSeed[current.activeVar].max,
-            step: variableSeed[current.activeVar].step,
-          },
-        },
-      })),
-    toggleOverlay: () =>
-      setState((current) => ({
-        ...current,
-        overlayVisible: !current.overlayVisible,
-      })),
-    resetControls: () => {
-      tickRef.current += 1
-      if (enableBackend && sessionIdRef.current) {
-        const nextVariables = resetVariableValues(state.variables)
-        void sendControl(sessionIdRef.current, nextVariables)
-      }
-      setState((current) => resetConsoleState(current, mode, tickRef.current))
-    },
-    stepActiveVar: (direction: 1 | -1) => {
-      tickRef.current += 1
-      if (enableBackend && sessionIdRef.current) {
-        const active = state.variables[state.activeVar]
-        const nextValue = roundForDigits(
-          Math.min(
-            active.max,
-            Math.max(active.min, active.value + active.step * direction),
-          ),
-          active.digits,
-        )
-        void sendControl(sessionIdRef.current, {
-          ...state.variables,
-          [state.activeVar]: {
             ...active,
+            min: roundForDigits(nextMin, active.digits),
+            max: roundForDigits(nextMax, active.digits),
+            step: roundForDigits(Math.max(update.step, 0), active.digits),
             value: nextValue,
           },
-        })
+        },
       }
-      setState((current) =>
-        applyVariableStep(current, direction, mode, tickRef.current),
+    })
+  }, [])
+
+  const restoreActiveVariableDefaults = useCallback(() => {
+    setState((current) => ({
+      ...current,
+      variables: {
+        ...current.variables,
+        [current.activeVar]: {
+          ...current.variables[current.activeVar],
+          min: variableSeed[current.activeVar].min,
+          max: variableSeed[current.activeVar].max,
+          step: variableSeed[current.activeVar].step,
+        },
+      },
+    }))
+  }, [])
+
+  const toggleOverlay = useCallback(() => {
+    setState((current) => ({
+      ...current,
+      overlayVisible: !current.overlayVisible,
+    }))
+  }, [])
+
+  const resetControls = useCallback(() => {
+    tickRef.current += 1
+    if (enableBackend && sessionIdRef.current) {
+      const nextVariables = resetVariableValues(stateRef.current.variables)
+      void sendControl(sessionIdRef.current, nextVariables)
+      setState((current) => ({ ...current, variables: nextVariables }))
+      return
+    }
+    setState((current) => resetConsoleState(current, mode, tickRef.current))
+  }, [enableBackend, mode])
+
+  const stepActiveVar = useCallback((direction: 1 | -1) => {
+    tickRef.current += 1
+    // backend 연결 모드: variables만 즉시 갱신 + control POST.
+    // metrics는 다음 WS payload(override 적용된 값)로 갱신되므로 mock 합성 불가.
+    // mock 모드: applyVariableStep이 deriveMetrics로 합성된 값 채움.
+    if (enableBackend && sessionIdRef.current) {
+      const snapshot = stateRef.current
+      const active = snapshot.variables[snapshot.activeVar]
+      const nextValue = roundForDigits(
+        Math.min(
+          active.max,
+          Math.max(active.min, active.value + active.step * direction),
+        ),
+        active.digits,
       )
-    },
+      const nextVariables = {
+        ...snapshot.variables,
+        [snapshot.activeVar]: { ...active, value: nextValue },
+      }
+      void sendControl(sessionIdRef.current, nextVariables)
+      setState((current) => ({ ...current, variables: nextVariables }))
+      return
+    }
+    setState((current) =>
+      applyVariableStep(current, direction, mode, tickRef.current),
+    )
+  }, [enableBackend, mode])
+
+  const setMode = useCallback((nextMode: Mode) => {
+    const sid = sessionIdRef.current
+    if (sid && enableBackend) {
+      void changeMode(sid, nextMode)
+    }
+  }, [enableBackend])
+
+  const resetOverride = useCallback(() => {
+    const sid = sessionIdRef.current
+    if (sid && enableBackend) {
+      void resetOverrideRequest(sid)
+    }
+  }, [enableBackend])
+
+  return {
+    state,
+    status,
+    setActiveVar,
+    updateActiveVariableConfig,
+    restoreActiveVariableDefaults,
+    toggleOverlay,
+    resetControls,
+    stepActiveVar,
+    setMode,
+    resetOverride,
   }
 }
 
@@ -386,8 +403,7 @@ async function startSession() {
     clearStoredSessionId(staleSid)
   }
 
-  // 백엔드는 mode를 사용하지 않는다 — sim/pred 분기는 프론트 표시 정책일 뿐.
-  // (예측 모드에서도 sim_loop는 동일하게 돌고, 예측은 별도 POST /api/prediction.)
+  // 세션은 항상 sim 모드로 시작 — 사용자가 realtime 토글하면 POST /api/session/{sid}/mode로 전환.
   const initialCondition = buildControlTagPayload((key) => variableSeed[key].base)
 
   const response = await fetch(`${apiBaseUrl()}/api/session/start`, {
@@ -448,6 +464,23 @@ async function sendControl(
   })
 }
 
+async function changeMode(sid: string, mode: Mode): Promise<void> {
+  const response = await fetch(`${apiBaseUrl()}/api/session/${sid}/mode`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode }),
+  })
+  if (!response.ok) throw new Error(`set mode failed: ${response.status}`)
+}
+
+async function resetOverrideRequest(sid: string): Promise<void> {
+  await fetch(`${apiBaseUrl()}/api/session/${sid}/reset`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+}
+
 function buildControlTagPayload(
   pickValue: (key: VariableKey) => number,
 ): Record<string, number> {
@@ -455,20 +488,6 @@ function buildControlTagPayload(
     acc[variableSeed[key].rawName] = pickValue(key)
     return acc
   }, {})
-}
-
-async function fetchPrediction(
-  sid: string,
-): Promise<{ predictedNox: number } | null> {
-  const response = await fetch(`${apiBaseUrl()}/api/prediction`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sid }),
-  })
-  if (!response.ok) return null
-  const payload = (await response.json()) as { predicted_nox?: number }
-  if (typeof payload.predicted_nox !== 'number') return null
-  return { predictedNox: payload.predicted_nox }
 }
 
 async function stopSession(sid: string) {
@@ -514,14 +533,6 @@ function buildWsUrl(sid: string) {
       : httpBase.replace('http://', 'ws://')
     : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
   return `${wsBase}/api/session/${sid}/stream`
-}
-
-function safeParseSnapshot(raw: string): BackendConsoleSnapshot | null {
-  try {
-    return JSON.parse(raw) as BackendConsoleSnapshot
-  } catch {
-    return null
-  }
 }
 
 function roundForDigits(value: number, digits: number) {
