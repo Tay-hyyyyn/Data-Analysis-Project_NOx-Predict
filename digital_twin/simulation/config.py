@@ -165,6 +165,12 @@ class FeatureConfig:
     base_efficiency: float = 0.89      # 기준 발전 효율 [무차원]
     temp_sensitivity: float = 0.0001   # 온도 1°C 변동당 효율 변동 [1/°C]
     off_design_penalty: float = 0.02   # off-design 효율 페널티 계수
+    # 합성가스 평균 분자량 [g/mol] — LHV 실측 9170 kJ/m³를 만족하는 조성 역추정.
+    # 가정 조성: H₂ 34.4%, CO 43%, CO₂ 15%, N₂ 7.6% (IGCC 표준 H₂:CO≈0.8:1.0)
+    # LHV식 검증: 10.78×0.344 + 12.63×0.430 = 9.14 MJ/m³ ≈ 실측 9.17
+    # M = 0.344×2 + 0.430×28 + 0.150×44 + 0.076×28 = 21.4 g/mol
+    # 조성 변동(plant 안정 구간)으로 인한 효율 절대값 ±10% 오차 한계.
+    syngas_molar_mass: float = 21.4
 
     # compute_o2_fraction
     o2_in_air: float = 0.21            # 공기 중 O2 몰분율 [물리상수, 대기 조성]

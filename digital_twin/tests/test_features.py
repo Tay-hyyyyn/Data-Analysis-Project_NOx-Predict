@@ -10,9 +10,13 @@ import math
 import pytest
 
 from digital_twin.simulation.config import DEFAULT_CONFIG
-from digital_twin.simulation.features import compute_lambda
+from digital_twin.simulation.features import (
+    compute_efficiency_from_lhv,
+    compute_lambda,
+)
 
 _LAMBDA_MIN = DEFAULT_CONFIG.thresholds.lambda_min
+_M_SYNGAS = DEFAULT_CONFIG.features.syngas_molar_mass
 
 
 class TestComputeLambdaWithO2:
@@ -84,3 +88,93 @@ class TestComputeLambdaClamp:
         # 하지만 floor만 검증 (실측에서 거의 발생 불가한 극단값)
         lam = compute_lambda(43.0, -10.0, 63.0, o2_dry_pct=o2)
         assert lam >= _LAMBDA_MIN
+
+
+class TestComputeEfficiencyFromLHV:
+    """LHV 실측 기반 발전 효율 회귀 테스트.
+
+    학습 CSV 평균 입력(DWATT=164, ca_fqsg_cl=43, LHVSYNDW_SCF=9170)에서
+    η ≈ 0.397 — GE 7F 단순 사이클 LHV 효율 도메인 표준값 정합.
+    """
+
+    def test_nominal_inputs_match_domain_efficiency(self):
+        eta = compute_efficiency_from_lhv(
+            power_mw=164.26,
+            syngas_flow=43.14,
+            lhv_kj_per_nm3=9170.23,
+            molar_mass_g_per_mol=_M_SYNGAS,
+        )
+        # 학습 데이터 mean 0.3968. 분자량 가정 ±10% 안에서 검증
+        assert eta is not None
+        assert 0.35 < eta < 0.45, f"η={eta} out of GE 7F domain range"
+
+    def test_in_operating_range_for_typical_lhv(self):
+        # LHV가 plant 정상 변동 범위(9100~9220)일 때 효율이 0.30~0.45 안
+        for lhv in (9100, 9150, 9200, 9220):
+            eta = compute_efficiency_from_lhv(
+                power_mw=164.0,
+                syngas_flow=43.0,
+                lhv_kj_per_nm3=lhv,
+                molar_mass_g_per_mol=_M_SYNGAS,
+            )
+            assert eta is not None
+            assert 0.30 <= eta <= 0.45, f"lhv={lhv} → η={eta} out of [0.30,0.45]"
+
+    def test_efficiency_clamped_to_unit_interval(self):
+        # 비현실적 입력에서도 [0, 1] 안에 떨어짐
+        eta = compute_efficiency_from_lhv(
+            power_mw=1000.0,  # 비현실적으로 큰 출력
+            syngas_flow=1.0,
+            lhv_kj_per_nm3=9170.0,
+            molar_mass_g_per_mol=_M_SYNGAS,
+        )
+        assert eta is not None
+        assert 0.0 <= eta <= 1.0
+
+    def test_lhv_none_returns_none(self):
+        # LHV 결측 → None. 호출부가 폴백 처리.
+        assert compute_efficiency_from_lhv(
+            power_mw=164.0,
+            syngas_flow=43.0,
+            lhv_kj_per_nm3=None,
+            molar_mass_g_per_mol=_M_SYNGAS,
+        ) is None
+
+    def test_lhv_nan_returns_none(self):
+        assert compute_efficiency_from_lhv(
+            power_mw=164.0,
+            syngas_flow=43.0,
+            lhv_kj_per_nm3=float("nan"),
+            molar_mass_g_per_mol=_M_SYNGAS,
+        ) is None
+
+    def test_lhv_non_positive_returns_none(self):
+        for lhv in (0.0, -1.0):
+            assert compute_efficiency_from_lhv(
+                power_mw=164.0,
+                syngas_flow=43.0,
+                lhv_kj_per_nm3=lhv,
+                molar_mass_g_per_mol=_M_SYNGAS,
+            ) is None
+
+    def test_zero_syngas_flow_returns_none(self):
+        # 트립·정지 상태에서 분모 0 방지
+        assert compute_efficiency_from_lhv(
+            power_mw=0.0,
+            syngas_flow=0.0,
+            lhv_kj_per_nm3=9170.0,
+            molar_mass_g_per_mol=_M_SYNGAS,
+        ) is None
+
+    def test_efficiency_scales_inversely_with_lhv(self):
+        # 같은 출력·유량에서 LHV가 커지면 효율은 작아짐 (입력 열량 증가)
+        eta_low = compute_efficiency_from_lhv(
+            power_mw=164.0, syngas_flow=43.0,
+            lhv_kj_per_nm3=9000.0, molar_mass_g_per_mol=_M_SYNGAS,
+        )
+        eta_high = compute_efficiency_from_lhv(
+            power_mw=164.0, syngas_flow=43.0,
+            lhv_kj_per_nm3=9400.0, molar_mass_g_per_mol=_M_SYNGAS,
+        )
+        assert eta_low is not None and eta_high is not None
+        assert eta_low > eta_high

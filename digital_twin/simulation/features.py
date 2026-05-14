@@ -143,6 +143,80 @@ def compute_efficiency(
 
 
 # ============================================================
+# 3-2) 열역학적 발전 효율 계산 (실측 LHV 기반)
+# [ASME PTC 22 표준: η = 전기출력 / 입력열량]
+# ------------------------------------------------------------
+# 의미:
+#   η = power [MJ/s] / Q_in [MJ/s]
+#   Q_in = syngas_flow [kg/s] × LHV_mass [MJ/kg]
+#   LHV_mass [MJ/kg] = LHV_vol [kJ/Nm³] × 1e-3 / ρ_stp [kg/Nm³]
+#
+# ρ_stp는 LHV가 Nm³(0°C, 1 atm) 기준이므로 표준상태 밀도를 사용한다
+#   ρ_stp = (P_0 × M) / (R × T_0)  ≈ 0.955 kg/Nm³ (M=21.4 g/mol)
+# 운전 압력/온도(FPSG/FTSG)는 입력 열량 계산에 들어가지 않는다.
+#
+# 검증: 학습 CSV(86,401행, DWATT>50MW) 적용 시 mean=0.397, p5~p95=0.388~0.406
+# GE 7F 단순 사이클 LHV 효율(~0.385) 도메인 범위 정합.
+#
+# 우선순위:
+#   1) LHV 측정값 유효 → 실측 기반 계산
+#   2) LHV 결측 → None 반환. 호출부가 폴백 처리.
+# ============================================================
+_R_GAS = 8.314      # 기체상수 [J/(mol·K)]
+_STP_P_PA = 101325  # 표준상태 압력 [Pa]
+_STP_T_K = 273.15   # 표준상태 온도 [K]
+
+
+def _stp_density(molar_mass_g_per_mol: float) -> float:
+    """표준상태(0°C, 1 atm) 이상기체 밀도 [kg/Nm³]."""
+    return (_STP_P_PA * molar_mass_g_per_mol * 1e-3) / (_R_GAS * _STP_T_K)
+
+
+def compute_efficiency_from_lhv(
+    power_mw: float,
+    syngas_flow: float,
+    *,
+    lhv_kj_per_nm3: float | None,
+    molar_mass_g_per_mol: float,
+) -> float | None:
+    """실측 LHV 기반 발전 효율 (열역학 표준식).
+
+    Args:
+        power_mw: 발전기 출력 [MW = MJ/s]. Kafka DWATT.
+        syngas_flow: 합성가스 질량유량 [kg/s]. Kafka ca_fqsg_cl.
+        lhv_kj_per_nm3: 합성가스 부피 LHV [kJ/Nm³]. Kafka LHVSYNDW_SCF.
+        molar_mass_g_per_mol: 합성가스 평균 분자량 [g/mol]. config 상수.
+
+    Returns:
+        효율 [무차원, 0.0~1.0 클램프]. 측정값 결측·비현실값일 때 None.
+    """
+    if lhv_kj_per_nm3 is None:
+        return None
+    if not (
+        math.isfinite(lhv_kj_per_nm3)
+        and math.isfinite(power_mw)
+        and math.isfinite(syngas_flow)
+    ):
+        return None
+    if lhv_kj_per_nm3 <= 0.0 or syngas_flow <= 0.0:
+        return None
+
+    rho_stp = _stp_density(molar_mass_g_per_mol)
+    if rho_stp <= 0.0:
+        return None
+
+    # LHV 단위 환산: kJ/Nm³ → MJ/kg
+    lhv_mj_per_kg = (lhv_kj_per_nm3 * 1e-3) / rho_stp
+
+    input_heat_mj_per_s = syngas_flow * lhv_mj_per_kg
+    if input_heat_mj_per_s <= 0.0:
+        return None
+
+    eta = power_mw / input_heat_mj_per_s
+    return max(0.0, min(1.0, eta))
+
+
+# ============================================================
 # 4) 공기 유량 환산 (보조)
 # ------------------------------------------------------------
 # Zeldovich ODE 입력으로 O2/N2 분압이 필요한데,
