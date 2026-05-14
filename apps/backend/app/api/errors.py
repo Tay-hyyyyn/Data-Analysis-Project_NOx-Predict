@@ -8,7 +8,9 @@ from app.exceptions import (
     DataNotEnoughError,
     DataSourceUnavailableError,
     InvalidControlInputError,
+    InvalidResetPasswordError,
     PredictorUnavailableError,
+    ResetUnavailableError,
     SessionLimitExceededError,
     SessionModeConflictError,
     SessionNotFoundError,
@@ -23,6 +25,8 @@ _STATUS_MAP: dict[type[DomainError], int] = {
     DataNotEnoughError: 503,
     DataSourceUnavailableError: 503,
     SessionModeConflictError: 409,
+    ResetUnavailableError: 503,
+    InvalidResetPasswordError: 401,
 }
 
 
