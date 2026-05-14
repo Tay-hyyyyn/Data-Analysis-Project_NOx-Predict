@@ -37,6 +37,7 @@ export function ServicePage() {
   } = useConsoleState(mode)
   const thresholds = useThresholds()
   const [draftConfig, setDraftConfig] = useState<VariableConfigUpdate | null>(null)
+  const [savedToast, setSavedToast] = useState(false)
   // realtime 모드는 Kafka 기반 5분 NOx 예측 표시 — 제어 조작은 잠근다.
   const isRealtimeMode = mode === 'realtime'
 
@@ -69,8 +70,16 @@ export function ServicePage() {
   })
   const handleCloseSettings = useCallback(() => {
     setDraftConfig(null)
+    setSavedToast(false)
     closeSettings()
   }, [closeSettings])
+
+  // 적용 클릭 시 1.5초간 "저장 완료" 토스트 노출
+  useEffect(() => {
+    if (!savedToast) return
+    const timer = window.setTimeout(() => setSavedToast(false), 1500)
+    return () => window.clearTimeout(timer)
+  }, [savedToast])
 
   useEffect(() => {
     reportStreamStatus(status)
@@ -406,6 +415,11 @@ export function ServicePage() {
                 onChange={(value) =>
                   setDraftConfig((current) => ({ ...(current ?? resolvedDraftConfig), max: value }))
                 }
+                quickPicks={buildPercentPicks(
+                  variableSeed[activeVariable.key].min,
+                  variableSeed[activeVariable.key].max,
+                  activeVariable.digits,
+                )}
               />
               <SettingField
                 label="하한"
@@ -417,6 +431,11 @@ export function ServicePage() {
                 onChange={(value) =>
                   setDraftConfig((current) => ({ ...(current ?? resolvedDraftConfig), min: value }))
                 }
+                quickPicks={buildPercentPicks(
+                  variableSeed[activeVariable.key].min,
+                  variableSeed[activeVariable.key].max,
+                  activeVariable.digits,
+                )}
               />
               <SettingField
                 label="step"
@@ -426,10 +445,14 @@ export function ServicePage() {
                 onChange={(value) =>
                   setDraftConfig((current) => ({ ...(current ?? resolvedDraftConfig), step: value }))
                 }
+                quickPicks={STEP_QUICK_PICKS}
               />
             </div>
 
             <div className="settings-modal-actions">
+              <div className="settings-modal-toast" aria-live="polite">
+                {savedToast ? <span className="settings-toast-text">저장 완료</span> : null}
+              </div>
               <button
                 type="button"
                 className="button-secondary"
@@ -441,6 +464,7 @@ export function ServicePage() {
                     max: defaults.max,
                     step: defaults.step,
                   })
+                  setSavedToast(true)
                 }}
               >
                 기본값 복원
@@ -450,7 +474,7 @@ export function ServicePage() {
                 className="button-primary"
                 onClick={() => {
                   updateActiveVariableConfig(draftConfig ?? resolvedDraftConfig)
-                  handleCloseSettings()
+                  setSavedToast(true)
                 }}
               >
                 적용
@@ -539,6 +563,7 @@ function SettingField({
   min,
   max,
   onChange,
+  quickPicks,
 }: {
   label: string
   unit: string
@@ -547,6 +572,7 @@ function SettingField({
   min?: number
   max?: number
   onChange: (value: number) => void
+  quickPicks?: ReadonlyArray<{ label: string; value: number }>
 }) {
   return (
     <label className="settings-field">
@@ -563,8 +589,54 @@ function SettingField({
         />
         <span className="settings-field-unit">{unit}</span>
       </div>
+      {quickPicks && quickPicks.length > 0 ? (
+        <div className="settings-quick-row" role="group" aria-label={`${label} 빠른 선택`}>
+          {quickPicks.map((pick) => {
+            const active = approxEqual(pick.value, value, digits)
+            return (
+              <button
+                key={`${label}-${pick.label}`}
+                type="button"
+                className={active ? 'settings-quick-pick active' : 'settings-quick-pick'}
+                onClick={() => onChange(pick.value)}
+                aria-pressed={active}
+              >
+                {pick.label}
+              </button>
+            )
+          })}
+        </div>
+      ) : null}
     </label>
   )
+}
+
+function approxEqual(a: number, b: number, digits: number): boolean {
+  const eps = Math.pow(10, -Math.max(digits, 0)) / 2
+  return Math.abs(a - b) <= eps
+}
+
+const STEP_QUICK_PICKS: ReadonlyArray<{ label: string; value: number }> = [
+  { label: '0.1', value: 0.1 },
+  { label: '0.5', value: 0.5 },
+  { label: '1', value: 1 },
+  { label: '5', value: 5 },
+  { label: '10', value: 10 },
+]
+
+// 운영 한계 min~max를 0/25/50/75/100%로 분할 — digits에 맞춰 반올림
+function buildPercentPicks(
+  min: number,
+  max: number,
+  digits: number,
+): ReadonlyArray<{ label: string; value: number }> {
+  const span = max - min
+  const factor = Math.pow(10, Math.max(digits, 0))
+  const round = (n: number) => Math.round(n * factor) / factor
+  return [0, 0.25, 0.5, 0.75, 1].map((ratio) => ({
+    label: `${Math.round(ratio * 100)}%`,
+    value: round(min + span * ratio),
+  }))
 }
 
 function KpiCard({
