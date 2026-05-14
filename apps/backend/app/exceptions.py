@@ -36,3 +36,18 @@ class SessionModeConflictError(DomainError):
     """sim 모드 전용 동작을 realtime 모드에서 시도했을 때."""
 
     error_code = "SESSION_MODE_CONFLICT"
+
+
+class ResetUnavailableError(DomainError):
+    """리셋 기능이 비활성화됐거나 docker socket이 가용하지 않음."""
+
+    error_code = "RESET_UNAVAILABLE"
+
+
+class InvalidResetPasswordError(DomainError):
+    """리셋 비밀번호가 일치하지 않음."""
+
+    error_code = "INVALID_RESET_PASSWORD"
+
+    def __init__(self) -> None:
+        super().__init__("Reset password does not match")
