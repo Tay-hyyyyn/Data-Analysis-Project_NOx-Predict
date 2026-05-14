@@ -52,15 +52,16 @@ class OperatingPoint:
 class InitialOutput:
     """세션 시작 시 t=0 출력 초기값.
 
+    학습 CSV(NOx_test_20250825.csv, DWATT>50MW 86401행) mean 적용.
     `co`는 학습 타겟에서 제외(`REFACTOR_FLAME_TEMP_TO_EXHAUST_TEMP.md`).
     """
 
-    nox: float = 20.0          # [ppm, 가안]
-    exhaust_temp: float = 580.0  # [°C]
-    lambda_: float = 1.10      # [무차원]
-    efficiency: float = 0.89   # [무차원]
-    power: float = 248.6       # [MW, 가안]
-    nox_integrated: float = 20.0  # Zeldovich ODE 적분 초기값 [ppm]
+    nox: float = 29.0          # [ppm] mean=29.14 (AT_H1_901_PV)
+    exhaust_temp: float = 627.5  # [°C] mean=627.54 (TTXM)
+    lambda_: float = 1.93      # [무차원] O2 mean 10.07% → 20.9/(20.9-10.07)
+    efficiency: float = 0.397  # [무차원] LHV 식 mean=0.3968
+    power: float = 164.0       # [MW] mean=164.26 (DWATT)
+    nox_integrated: float = 29.0  # Zeldovich ODE 적분 초기값 [ppm]
 
 
 # ============================================================
