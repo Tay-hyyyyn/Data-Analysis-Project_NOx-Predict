@@ -60,8 +60,11 @@ def _make_simulator() -> MagicMock:
     return sim
 
 
-def _make_forecaster(predicted: float = 31.2) -> MagicMock:
+def _make_forecaster(predicted: float = 31.2, name: str = "stub") -> MagicMock:
+    # name은 _build_forecast_input의 분기 키 — 기본은 stub(features dict 경로)이고
+    # ML 분기를 검증하는 케이스에서만 "ml"로 오버라이드한다.
     fc = MagicMock()
+    fc.name = name
     fc.predict.return_value = predicted
     return fc
 
@@ -149,6 +152,7 @@ async def test_forecaster_failure_yields_null_forecast():
     session = _make_session(mode="realtime")
     sessions = {"s1": session}
     fc = MagicMock()
+    fc.name = "stub"
     fc.predict.side_effect = RuntimeError("model unavailable")
     ws = AsyncMock()
 
@@ -220,6 +224,40 @@ async def test_tick_increments_session_tick():
     assert session.tick == 0
     await engine._tick()
     assert session.tick == 1
+
+
+# ML forecaster 분기 회귀 -------------------------------------------------
+@pytest.mark.asyncio
+async def test_realtime_ml_forecaster_receives_recent_df():
+    """forecaster.name=='ml' 분기에서 ForecastInput.recent_df가 채워지고
+    dt forecaster 필수 컬럼(RAW_FEATURES + TTXM + NOX + DWATT)이 0.0 폴백을 거쳐
+    모두 포함되는지 검증. 옛 wiring(features만 채움)으로의 회귀 방지.
+    """
+    from app.adapters.forecaster import ForecastInput
+    from digital_twin.forecaster.predict import DWATT_COL, TTXM_COL
+    from digital_twin.forecaster.preprocess import NOX_TARGET_COL, RAW_FEATURES
+
+    buf = _make_buffer()
+    session = _make_session(mode="realtime")
+    sessions = {"s1": session}
+    fc = _make_forecaster(predicted=42.5, name="ml")
+    ws = AsyncMock()
+
+    engine = RealtimeEngine(
+        settings=_make_settings(),
+        sensor_buffer=buf, simulator=_make_simulator(),
+        forecaster=fc, ws_manager=ws, sessions=sessions,
+    )
+    await engine._tick()
+
+    fc.predict.assert_called_once()
+    call_input = fc.predict.call_args[0][0]
+    assert isinstance(call_input, ForecastInput)
+    assert call_input.recent_df is not None, "ML 분기는 recent_df로 호출되어야 함"
+    cols = set(call_input.recent_df.columns)
+    required = set(RAW_FEATURES) | {TTXM_COL, NOX_TARGET_COL, DWATT_COL}
+    missing = required - cols
+    assert not missing, f"ML forecaster 필수 컬럼 누락: {sorted(missing)}"
 
 
 # NOx 15% O2 보정식 ----------------------------------------------------------

@@ -211,8 +211,8 @@ class RealtimeEngine:
                 warning = "kafka stream stale"
             else:
                 try:
-                    features = self._controls_to_features(input_controls)
-                    predicted = self.forecaster.predict(ForecastInput(features=features))
+                    inputs = self._build_forecast_input(session, input_controls)
+                    predicted = self.forecaster.predict(inputs)
                     forecast_payload = self._build_forecast_payload(predicted, o2_pct)
                 except Exception as exc:
                     logger.warning("forecast_failed sid=%s err=%s", session.sid, exc)
@@ -313,6 +313,27 @@ class RealtimeEngine:
             "ibh_valve": controls.ibh_valve,
             "n2_flow": controls.n2_flow,
         }
+
+    def _build_forecast_input(
+        self, session: Session, controls: ControlVars
+    ) -> ForecastInput:
+        # MLForecaster는 raw 시계열 DataFrame을 요구, Stub은 features dict.
+        # SessionContext.recent_df_buffer는 _synthesize_row가 RAW 39 + TTXM 키를 매 tick
+        # 채워주지만 NOX/DWATT는 BUFFER_COLS에 없어 누락 → forecaster.predict가 ValueError
+        # raise. forecast_service의 REST 경로와 동일하게 누락 컬럼 0.0 폴백.
+        if self.forecaster.name != "ml":
+            return ForecastInput(features=self._controls_to_features(controls))
+        # 지역 import — 모듈 import 순환 방지 + lazy 의존성.
+        from digital_twin.forecaster.predict import DWATT_COL, TTXM_COL
+        from digital_twin.forecaster.preprocess import NOX_TARGET_COL, RAW_FEATURES
+        recent_df = session.context.buffer_to_df()
+        if recent_df.empty:
+            # cold start — buffer 비어 있으면 features dict로 graceful degrade.
+            return ForecastInput(features=self._controls_to_features(controls))
+        required = set(RAW_FEATURES) | {TTXM_COL, NOX_TARGET_COL, DWATT_COL}
+        for col in required - set(recent_df.columns):
+            recent_df[col] = 0.0
+        return ForecastInput(recent_df=recent_df)
 
     def _build_forecast_payload(
         self, predicted_nox: float, o2_pct: float | None
