@@ -45,6 +45,20 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     configure_logging(settings.log_level)
 
+    # 조기 검증 — 무거운 init(ML 모델·KafkaProducer·CSV bootstrap)을 시작하기 전에
+    # 환경변수 정합성을 먼저 거른다. 잘못된 조합은 startup 수 초 낭비 없이 즉시 fail.
+    if settings.sensor_stream_poll_enabled:
+        if settings.kafka_stream_enabled:
+            raise RuntimeError(
+                "SENSOR_STREAM_POLL_ENABLED와 KAFKA_STREAM_ENABLED는 동시 활성화 불가 — "
+                "둘 다 SensorBuffer에 쓰면 중복 row가 들어간다."
+            )
+        if not settings.database_url:
+            raise RuntimeError(
+                "SENSOR_STREAM_POLL_ENABLED=true는 DATABASE_URL 설정 필수 — "
+                "silent disable 대신 명시적 fail."
+            )
+
     DbContext.init(settings.database_url)
 
     # === Simulator DI ===
@@ -108,28 +122,17 @@ async def lifespan(app: FastAPI):
     kafka_sensor_stream.attach_buffer(sensor_buffer)
 
     # === SensorStreamPoller (sensor_data_stream DB 폴링 경로) ===
-    # KafkaSensorStream과 SensorStreamPoller는 둘 다 SensorBuffer.append 하므로
-    # 동시 활성화 시 중복 흡수. 상호배타로 강제한다.
+    # KafkaSensorStream과의 상호배타·DB 가용성은 lifespan 진입부에서 이미 검증함.
     sensor_stream_poller: SensorStreamPoller | None = None
     if settings.sensor_stream_poll_enabled:
-        if settings.kafka_stream_enabled:
-            raise RuntimeError(
-                "SENSOR_STREAM_POLL_ENABLED와 KAFKA_STREAM_ENABLED는 동시 활성화 불가 — "
-                "둘 다 SensorBuffer에 쓰면 중복 row가 들어간다."
-            )
-        if not DbContext.is_available():
-            logger.error(
-                "sensor_stream_poll_enabled_but_db_unavailable — DATABASE_URL 미설정"
-            )
-        else:
-            assert DbContext.session_factory is not None
-            stream_repo = SensorStreamRepository(DbContext.session_factory)
-            sensor_stream_poller = SensorStreamPoller(
-                repo=stream_repo,
-                sensor_buffer=sensor_buffer,
-                poll_interval_sec=settings.sensor_stream_poll_interval_sec,
-                fetch_limit=settings.sensor_stream_poll_batch_size,
-            )
+        assert DbContext.session_factory is not None  # 진입부 가드 통과 보장
+        stream_repo = SensorStreamRepository(DbContext.session_factory)
+        sensor_stream_poller = SensorStreamPoller(
+            repo=stream_repo,
+            sensor_buffer=sensor_buffer,
+            poll_interval_sec=settings.sensor_stream_poll_interval_sec,
+            fetch_limit=settings.sensor_stream_poll_batch_size,
+        )
 
     # === Sessions + WS Manager ===
     sessions: dict[str, Session] = {}

@@ -27,12 +27,14 @@ def _set_first(session, row):
 
 
 def _stream_row(
+    row_id: int,
     ingested_at: datetime,
     measured_at: datetime,
     nox_ppm: float = 30.0,
 ) -> dict:
-    """14 운영 + measured_at + ingested_at — DDL 컬럼 전부 채움."""
+    """DB 컬럼명으로 row 모킹 — repo가 도메인 키로 변환해 반환한다."""
     return {
+        "id": row_id,
         "measured_at": measured_at,
         "ingested_at": ingested_at,
         "syngas_flow": 100.0,
@@ -53,24 +55,30 @@ def _stream_row(
 
 
 @pytest.mark.asyncio
-async def test_fetch_since_returns_domain_rows(mock_session_factory):
-    """ingest_mode='stream' + ingested_at > cursor 결과를 도메인 dict로 반환."""
+async def test_fetch_since_translates_db_columns_to_domain_keys(mock_session_factory):
+    """DB nox_ppm/power_mw/npr_primary → 도메인 nox/power/vnpr_p.
+    tags.py::ALL_TAGS_TO_DOMAIN과 키 정합 — RealtimeEngine forecaster 호환."""
     factory, session = mock_session_factory
     base = datetime(2026, 5, 15, 10, 0, 0)
-    rows = [
-        _stream_row(base + timedelta(seconds=i), base + timedelta(seconds=i), nox_ppm=30.0 + i)
-        for i in range(3)
-    ]
+    rows = [_stream_row(1, base, base, nox_ppm=33.0)]
     _set_rows(session, rows)
 
     repo = SensorStreamRepository(factory)
-    result = await repo.fetch_since(base - timedelta(seconds=1), limit=10)
+    result = await repo.fetch_since((base - timedelta(seconds=1), 0), limit=10)
 
-    assert len(result) == 3
-    assert result[0]["nox_ppm"] == 30.0
-    assert result[-1]["nox_ppm"] == 32.0
-    # 도메인 키 14개 + measured_at + ingested_at = 16
-    assert set(result[0].keys()) >= {"syngas_flow", "nox_ppm", "exhaust_temp", "measured_at", "ingested_at"}
+    assert len(result) == 1
+    row = result[0]
+    # 도메인 키로 변환됨
+    assert row["nox"] == 33.0
+    assert row["power"] == 165.0
+    assert row["vnpr_p"] == 1.5
+    # DB 컬럼명은 더 이상 노출되지 않음
+    assert "nox_ppm" not in row
+    assert "power_mw" not in row
+    assert "npr_primary" not in row
+    # 11개 동일명은 그대로
+    assert row["syngas_flow"] == 100.0
+    assert row["exhaust_temp"] == 580.0
 
 
 @pytest.mark.asyncio
@@ -78,13 +86,13 @@ async def test_fetch_since_empty_when_no_new_rows(mock_session_factory):
     factory, session = mock_session_factory
     _set_rows(session, [])
     repo = SensorStreamRepository(factory)
-    result = await repo.fetch_since(datetime(2026, 5, 15, 10, 0, 0), limit=10)
+    result = await repo.fetch_since((datetime(2026, 5, 15, 10, 0, 0), 0), limit=10)
     assert result == []
 
 
 @pytest.mark.asyncio
 async def test_fetch_since_rejects_none_cursor(mock_session_factory):
-    """None cursor는 explicit error — 호출자가 latest_ingested_at으로 초기화 필요."""
+    """None cursor는 explicit error — 호출자가 latest_cursor로 초기화 필요."""
     factory, _ = mock_session_factory
     repo = SensorStreamRepository(factory)
     with pytest.raises(ValueError, match="cursor required"):
@@ -92,30 +100,29 @@ async def test_fetch_since_rejects_none_cursor(mock_session_factory):
 
 
 @pytest.mark.asyncio
-async def test_fetch_since_passes_cursor_and_limit_to_query(mock_session_factory):
-    """SQL 바인드 파라미터로 cursor·limit이 정확히 전달."""
+async def test_fetch_since_passes_composite_cursor_to_query(mock_session_factory):
+    """SQL 바인드 파라미터로 (cursor_ts, cursor_id, limit)이 정확히 전달."""
     factory, session = mock_session_factory
     _set_rows(session, [])
     repo = SensorStreamRepository(factory)
-    cursor = datetime(2026, 5, 15, 10, 0, 0)
-    await repo.fetch_since(cursor, limit=50)
-    call_args = session.execute.call_args
-    params = call_args[0][1]
-    assert params == {"cursor": cursor, "limit": 50}
+    cursor_ts = datetime(2026, 5, 15, 10, 0, 0)
+    await repo.fetch_since((cursor_ts, 42), limit=50)
+    params = session.execute.call_args[0][1]
+    assert params == {"cursor_ts": cursor_ts, "cursor_id": 42, "limit": 50}
 
 
 @pytest.mark.asyncio
-async def test_latest_ingested_at_returns_max(mock_session_factory):
+async def test_latest_cursor_returns_tuple(mock_session_factory):
     factory, session = mock_session_factory
-    latest = datetime(2026, 5, 15, 10, 5, 0)
-    _set_first(session, {"latest": latest})
+    latest_ts = datetime(2026, 5, 15, 10, 5, 0)
+    _set_first(session, {"ingested_at": latest_ts, "id": 100})
     repo = SensorStreamRepository(factory)
-    assert await repo.latest_ingested_at() == latest
+    assert await repo.latest_cursor() == (latest_ts, 100)
 
 
 @pytest.mark.asyncio
-async def test_latest_ingested_at_returns_none_for_empty_table(mock_session_factory):
+async def test_latest_cursor_returns_none_for_empty_table(mock_session_factory):
     factory, session = mock_session_factory
-    _set_first(session, {"latest": None})
+    _set_first(session, None)
     repo = SensorStreamRepository(factory)
-    assert await repo.latest_ingested_at() is None
+    assert await repo.latest_cursor() is None

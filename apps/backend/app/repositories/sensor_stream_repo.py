@@ -1,10 +1,19 @@
 """sensor_data_stream 폴링 전용 repository.
 
 KafkaSensorStream과 별개 경로 — kafka-etl-consumer가 적재한 row를
-backend가 ingested_at cursor 기반으로 단조 증가 순서로 pull.
+backend가 (ingested_at, id) composite cursor 기반으로 단조 증가 순서로 pull.
 
 DDL은 `database/sensor_data_stream.sql` — 14 운영 컬럼 + 5 lineage + ingested_at.
 schema SoT 변경은 협의 필요(`AGENTS.md` root 가드).
+
+도메인 키 매핑 — `app/domain/tags.py::ALL_TAGS_TO_DOMAIN`이 SoT.
+DB 컬럼 vs 도메인 식별자가 일부 다르다 (`nox_ppm`/`power_mw`/`npr_primary`).
+KafkaSensorStream 경로(`normalize_raw_message`)와 키 셋을 맞추지 않으면 RealtimeEngine
+forecaster가 NOx feature 0 stagnation으로 무한 차단된다(PR #2 `_warmup_reason`).
+
+DB connection pool 주의 — `DbContext.session_factory`는 `sensor_repo`/
+`simulation_log_repo`와 동일 engine을 공유한다(pool_size=5). 1초 폴링은
+1 connection만 점유하므로 문제 없으나, 부하 증가 시 별도 engine 분리 검토.
 """
 
 from __future__ import annotations
@@ -19,28 +28,35 @@ from sqlalchemy.orm import Session, sessionmaker
 
 logger = logging.getLogger(__name__)
 
-# sensor_data_stream의 14 운영 컬럼 — DDL 순서 보존.
-# SensorBuffer가 받는 도메인 dict 키와 1:1 매핑(DB 컬럼명 == 도메인 식별자).
-_STREAM_COLUMNS: tuple[str, ...] = (
-    "syngas_flow",
-    "igv_opening",
-    "n2_offset",
-    "n2_valve_1",
-    "syngas_srv",
-    "syngas_gcv_1",
-    "syngas_gcv_1a",
-    "syngas_gcv_2",
-    "ibh_valve",
-    "n2_flow",
-    "nox_ppm",
-    "exhaust_temp",
-    "power_mw",
-    "npr_primary",
+# (DB 컬럼명, SensorBuffer 도메인 키) — DDL 순서 보존.
+# 11개는 동일명이지만 nox_ppm/power_mw/npr_primary 3개는 변환 필요.
+# tags.py::ALL_TAGS_TO_DOMAIN과 정합(`nox_ppm`→`nox`, `power_mw`→`power`,
+# `npr_primary`→`vnpr_p` 외란 도메인 키).
+_STREAM_COLUMN_MAP: tuple[tuple[str, str], ...] = (
+    ("syngas_flow", "syngas_flow"),
+    ("igv_opening", "igv_opening"),
+    ("n2_offset", "n2_offset"),
+    ("n2_valve_1", "n2_valve_1"),
+    ("syngas_srv", "syngas_srv"),
+    ("syngas_gcv_1", "syngas_gcv_1"),
+    ("syngas_gcv_1a", "syngas_gcv_1a"),
+    ("syngas_gcv_2", "syngas_gcv_2"),
+    ("ibh_valve", "ibh_valve"),
+    ("n2_flow", "n2_flow"),
+    ("nox_ppm", "nox"),
+    ("exhaust_temp", "exhaust_temp"),
+    ("power_mw", "power"),
+    ("npr_primary", "vnpr_p"),
 )
+
+# composite cursor — (ingested_at, id) 단조성 보장.
+# PostgreSQL CURRENT_TIMESTAMP은 transaction start time이라 동일 ms 내 tie 가능.
+# ms 해상도 tie + LIMIT 경계에서 row가 영구 skip되는 위험을 id로 회피.
+StreamCursor = tuple[datetime, int]
 
 
 class SensorStreamRepository:
-    """sensor_data_stream의 stream-mode row를 ingested_at 기준으로 polling.
+    """sensor_data_stream의 stream-mode row를 (ingested_at, id) ASC로 polling.
 
     bootstrap row는 별도 경로(KafkaSensorStream의 CSV)에서 들어오므로
     `ingest_mode='stream'`으로 한정해 중복 흡수를 방지한다.
@@ -51,58 +67,76 @@ class SensorStreamRepository:
 
     async def fetch_since(
         self,
-        ingested_at_after: datetime | None,
+        cursor: StreamCursor | None,
         limit: int = 200,
     ) -> list[dict[str, Any]]:
-        """ingested_at > cursor 인 stream row를 ASC 정렬로 반환.
+        """(ingested_at, id) > cursor 인 stream row를 ASC 정렬로 반환.
 
-        cursor가 None이면 latest_ingested_at에서 시작하라는 의미 — 호출자가
-        명시적으로 latest_ingested_at()으로 초기화한 뒤 호출한다.
+        cursor가 None이면 호출자가 latest_cursor()로 초기화한 뒤 호출한다.
         """
-        if ingested_at_after is None:
-            raise ValueError("ingested_at_after cursor required (use latest_ingested_at)")
-        return await asyncio.to_thread(self._fetch_sync, ingested_at_after, limit)
+        if cursor is None:
+            raise ValueError("cursor required (use latest_cursor)")
+        return await asyncio.to_thread(self._fetch_sync, cursor, limit)
 
-    async def latest_ingested_at(self) -> datetime | None:
+    async def latest_cursor(self) -> StreamCursor | None:
         """초기 cursor 결정용. 빈 테이블이면 None."""
         return await asyncio.to_thread(self._latest_sync)
 
-    def _fetch_sync(self, cursor: datetime, limit: int) -> list[dict[str, Any]]:
-        col_list = ", ".join(_STREAM_COLUMNS)
+    def _fetch_sync(self, cursor: StreamCursor, limit: int) -> list[dict[str, Any]]:
+        db_cols = [db for db, _ in _STREAM_COLUMN_MAP]
+        col_list = ", ".join(db_cols)
+        # (ingested_at, id) 튜플 비교 — 두 컬럼 모두 ASC 정렬해 cursor 전진.
         sql = text(
             f"""
-            SELECT measured_at, ingested_at, {col_list}
+            SELECT id, measured_at, ingested_at, {col_list}
             FROM sensor_data_stream
-            WHERE ingested_at > :cursor AND ingest_mode = 'stream'
-            ORDER BY ingested_at ASC
+            WHERE (ingested_at, id) > (:cursor_ts, :cursor_id)
+              AND ingest_mode = 'stream'
+            ORDER BY ingested_at ASC, id ASC
             LIMIT :limit
             """
         )
+        cursor_ts, cursor_id = cursor
         with self.session_factory() as session:
-            result = session.execute(sql, {"cursor": cursor, "limit": int(limit)})
+            result = session.execute(
+                sql,
+                {
+                    "cursor_ts": cursor_ts,
+                    "cursor_id": int(cursor_id),
+                    "limit": int(limit),
+                },
+            )
             rows = result.mappings().all()
         return [self._to_domain_dict(r) for r in rows]
 
-    def _latest_sync(self) -> datetime | None:
+    def _latest_sync(self) -> StreamCursor | None:
         sql = text(
             """
-            SELECT MAX(ingested_at) AS latest
+            SELECT ingested_at, id
             FROM sensor_data_stream
             WHERE ingest_mode = 'stream'
+            ORDER BY ingested_at DESC, id DESC
+            LIMIT 1
             """
         )
         with self.session_factory() as session:
             row = session.execute(sql).mappings().first()
         if row is None:
             return None
-        latest = row["latest"]
-        return latest if isinstance(latest, datetime) else None
+        ts = row["ingested_at"]
+        if not isinstance(ts, datetime):
+            return None
+        return (ts, int(row["id"]))
 
     @staticmethod
     def _to_domain_dict(row: Any) -> dict[str, Any]:
-        # sqlalchemy RowMapping → plain dict (SensorBuffer가 dict[str, Any] 기대).
-        # ingested_at은 cursor 전진용으로 보존, measured_at은 도메인 시각.
-        out: dict[str, Any] = {col: row[col] for col in _STREAM_COLUMNS}
+        # DB 컬럼 → 도메인 키 변환 후 SensorBuffer 호환 dict로 반환.
+        # ingested_at·id는 cursor 전진용으로 보존(poller가 strip), measured_at은 도메인 시각.
+        out: dict[str, Any] = {
+            domain_key: row[db_col]
+            for db_col, domain_key in _STREAM_COLUMN_MAP
+        }
         out["measured_at"] = row["measured_at"]
         out["ingested_at"] = row["ingested_at"]
+        out["id"] = row["id"]
         return out
