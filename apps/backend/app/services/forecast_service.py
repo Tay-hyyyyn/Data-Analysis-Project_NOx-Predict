@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
@@ -20,6 +21,8 @@ from app.domain.tags import DOMAIN_TO_RAW_TAG
 from app.repositories.simulation_log_repo import SimulationLogRepository
 from app.schemas.prediction import PredictionResponse
 from digital_twin.simulation import DEFAULT_CONFIG, ControlVars, DTConfig
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from app.core.sensor_buffer import SensorBuffer
@@ -85,8 +88,10 @@ class ForecastService:
         }
         raw_df = domain_df.rename(columns=rename_map)
         required = set(RAW_FEATURES) | {TTXM_COL, NOX_TARGET_COL, DWATT_COL}
-        for col in required - set(raw_df.columns):
+        missing = required - set(raw_df.columns)
+        for col in missing:
             raw_df[col] = 0.0
+        _log_forecast_diag(raw_df, missing, source="rest")
         return raw_df
 
     def _resolve_controls(self, sid: str | None) -> ControlVars:
@@ -135,3 +140,54 @@ def _controls_to_features(controls: ControlVars) -> dict[str, float]:
         "ibh_valve": controls.ibh_valve,
         "n2_flow": controls.n2_flow,
     }
+
+
+def _log_forecast_diag(
+    raw_df: pd.DataFrame,
+    missing_cols: set[str],
+    *,
+    source: str,
+) -> None:
+    """REST 경로 forecast 입력 진단 — realtime_engine과 동일 포맷.
+
+    목적: -19 → 15 변동 원인이 buffer stagnation(NOx std≈0)인지,
+    OOD 외삽(외란 컬럼 대량 0.0 폴백)인지 즉시 구분.
+    """
+    try:
+        from digital_twin.forecaster.predict import DWATT_COL, TTXM_COL
+        from digital_twin.forecaster.preprocess import NOX_TARGET_COL, RAW_FEATURES
+
+        buf_len = len(raw_df)
+        nox_col = raw_df.get(NOX_TARGET_COL)
+        if nox_col is not None and buf_len > 0:
+            nox_std = float(nox_col.std(skipna=True) or 0.0)
+            nox_unique = int(nox_col.nunique(dropna=True))
+            tail = nox_col.tail(min(300, buf_len))
+            nox_roll_std_300s = float(tail.std(skipna=True) or 0.0)
+            nox_last = float(nox_col.iloc[-1])
+        else:
+            nox_std = nox_unique = nox_roll_std_300s = 0
+            nox_last = float("nan")
+        raw_set = set(RAW_FEATURES)
+        zero_filled_missing = len(missing_cols & raw_set)
+        last_row_zero = 0
+        if buf_len > 0:
+            last_row = raw_df.iloc[-1]
+            for col in raw_set:
+                if col in last_row.index:
+                    v = last_row[col]
+                    if isinstance(v, (int, float)) and v == 0.0:
+                        last_row_zero += 1
+        logger.info(
+            "forecast_diag source=%s path=ml buf_len=%d nox_std=%.4f "
+            "nox_roll_std_300s=%.4f nox_unique=%d nox_last=%.3f "
+            "missing_cols=%d raw_zero_filled=%d last_row_zero=%d/%d "
+            "ttxm_present=%s dwatt_present=%s",
+            source, buf_len, nox_std, nox_roll_std_300s, nox_unique, nox_last,
+            len(missing_cols), zero_filled_missing,
+            last_row_zero, len(raw_set),
+            TTXM_COL in raw_df.columns,
+            DWATT_COL in raw_df.columns,
+        )
+    except Exception as exc:
+        logger.debug("forecast_diag_log_failed source=%s err=%s", source, exc)
