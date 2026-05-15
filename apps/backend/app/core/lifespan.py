@@ -22,11 +22,13 @@ from app.core.logging import configure_logging
 from app.core.realtime_engine import RealtimeEngine
 from app.core.sensor_buffer import SensorBuffer, operating_point_to_sensor_row
 from app.core.sensor_csv import normalize_measured_at
+from app.core.sensor_stream_poller import SensorStreamPoller
 from app.core.session import Session
 from app.core.ws_manager import WebSocketManager
 from app.db.session import DbContext
 from app.domain.tags import normalize_raw_message
 from app.exceptions import PredictorUnavailableError
+from app.repositories.sensor_stream_repo import SensorStreamRepository
 from app.repositories.simulation_log_repo import SimulationLogRepository
 from app.adapters.container_restart import (
     ContainerRestartAdapter,
@@ -105,6 +107,30 @@ async def lifespan(app: FastAPI):
 
     kafka_sensor_stream.attach_buffer(sensor_buffer)
 
+    # === SensorStreamPoller (sensor_data_stream DB 폴링 경로) ===
+    # KafkaSensorStream과 SensorStreamPoller는 둘 다 SensorBuffer.append 하므로
+    # 동시 활성화 시 중복 흡수. 상호배타로 강제한다.
+    sensor_stream_poller: SensorStreamPoller | None = None
+    if settings.sensor_stream_poll_enabled:
+        if settings.kafka_stream_enabled:
+            raise RuntimeError(
+                "SENSOR_STREAM_POLL_ENABLED와 KAFKA_STREAM_ENABLED는 동시 활성화 불가 — "
+                "둘 다 SensorBuffer에 쓰면 중복 row가 들어간다."
+            )
+        if not DbContext.is_available():
+            logger.error(
+                "sensor_stream_poll_enabled_but_db_unavailable — DATABASE_URL 미설정"
+            )
+        else:
+            assert DbContext.session_factory is not None
+            stream_repo = SensorStreamRepository(DbContext.session_factory)
+            sensor_stream_poller = SensorStreamPoller(
+                repo=stream_repo,
+                sensor_buffer=sensor_buffer,
+                poll_interval_sec=settings.sensor_stream_poll_interval_sec,
+                fetch_limit=settings.sensor_stream_poll_batch_size,
+            )
+
     # === Sessions + WS Manager ===
     sessions: dict[str, Session] = {}
     ws_manager = WebSocketManager()
@@ -126,6 +152,7 @@ async def lifespan(app: FastAPI):
     app.state.simulator = simulator
     app.state.forecaster = forecaster
     app.state.kafka_sensor_stream = kafka_sensor_stream
+    app.state.sensor_stream_poller = sensor_stream_poller
     app.state.simulation_log_repo = simulation_log_repo
     app.state.realtime_engine = realtime_engine
 
@@ -154,11 +181,15 @@ async def lifespan(app: FastAPI):
     app.state.reset_service = reset_service
 
     await kafka_sensor_stream.start()
+    if sensor_stream_poller is not None:
+        await sensor_stream_poller.start()
     await realtime_engine.start()
 
     try:
         yield
     finally:
         await realtime_engine.stop()
+        if sensor_stream_poller is not None:
+            await sensor_stream_poller.stop()
         await kafka_sensor_stream.stop()
         DbContext.dispose()
