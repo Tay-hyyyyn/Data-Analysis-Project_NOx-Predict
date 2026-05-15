@@ -27,10 +27,13 @@ CSV test data -> Producer -> Kafka topic -> Consumer -> Backend/Frontend
 - Producer input: `data/raw/250811-250825/NOx_test_20250825.csv`
 - Message format: JSON
 - Default interval: 1 second per row
+- Loop reset marker: `event_type=bootstrap_reset`
 
-Backend consumer는 `KAFKA_STREAM_ENABLED=true`일 때 `noxo.sensor.raw`를 읽고 최신 메시지를 메모리에 보관한다.
+현재 운영 연결은 Plan B를 기본으로 둔다. Backend가 Kafka를 직접 읽는 대신 `kafka-etl-consumer`가 `noxo.sensor.raw`를 읽어 `sensor_data_stream`에 적재하고, backend는 `SENSOR_STREAM_POLL_ENABLED=true`일 때 DB stream row를 polling해 WebSocket 세션 버퍼에 반영한다. 이때 `KAFKA_STREAM_ENABLED=false`를 유지해 direct Kafka consumer와 DB poller가 동시에 같은 buffer에 쓰지 않게 한다.
 
 또한 백엔드는 `NOx_test_20250825.csv`의 초기 15분 구간을 preload data로 읽어 `GET /api/streaming/bootstrap`으로 제공할 수 있다. Producer는 같은 15분 구간을 건너뛰고 그 다음 시점부터 Kafka로 발행해 초기 화면과 실시간 구간이 겹치지 않도록 맞춘다.
+
+CSV 끝까지 발행한 뒤 producer가 다음 loop를 시작할 때는 `bootstrap_reset` control message를 먼저 보낸다. Stream ETL consumer는 이 marker를 받으면 초기 15분을 `sensor_data_stream`에 다시 upsert하고, producer는 곧바로 00:15:00 이후 live replay를 이어간다.
 
 ## Message Shape
 
@@ -91,24 +94,30 @@ Inspect messages with Redpanda:
 docker exec -it noxo_redpanda rpk topic consume noxo.sensor.raw -n 5
 ```
 
-Enable the backend consumer:
+Enable the backend DB poller:
 
 ```bash
-KAFKA_STREAM_ENABLED=true docker compose --env-file .env -f docker/docker-compose.yml -f docker/docker-compose.dev.yml up -d --build backend
+SENSOR_STREAM_POLL_ENABLED=true KAFKA_STREAM_ENABLED=false docker compose --env-file .env -f docker/docker-compose.yml -f docker/docker-compose.dev.yml up -d --build backend
 ```
 
 For Windows PowerShell:
 
 ```powershell
-$env:KAFKA_STREAM_ENABLED = "true"
+$env:SENSOR_STREAM_POLL_ENABLED = "true"
+$env:KAFKA_STREAM_ENABLED = "false"
 docker compose --env-file .env -f docker/docker-compose.yml -f docker/docker-compose.dev.yml up -d --build backend
+Remove-Item Env:\SENSOR_STREAM_POLL_ENABLED
 Remove-Item Env:\KAFKA_STREAM_ENABLED
 ```
 
-Check the latest consumed message:
+Check the stream DB ingestion:
 
 ```bash
-curl http://localhost:8000/api/streaming/latest
+docker exec -it docker-postgres-1 psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
+SELECT ingest_mode, COUNT(*), MIN(measured_at), MAX(measured_at)
+FROM sensor_data_stream
+GROUP BY ingest_mode
+ORDER BY ingest_mode;"
 ```
 
 Check the preload bootstrap window:

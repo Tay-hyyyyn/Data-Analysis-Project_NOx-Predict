@@ -96,3 +96,37 @@ def test_loop_attaches_published_at_field_to_each_message():
     sent_value = producer.send.call_args.kwargs["value"]
     assert "published_at" in sent_value
     assert sent_value["published_at"].endswith("Z")
+
+
+def test_loop_emits_bootstrap_reset_marker_before_each_cycle():
+    rows = [
+        {"measured_at": "2025-08-25 00:15:01", "values": {"a": 1}},
+        {"measured_at": "2025-08-25 00:15:02", "values": {"a": 2}},
+    ]
+    producer = MagicMock()
+
+    sent_count = run_producer_loop(
+        producer=producer,
+        topic="t",
+        generator_factory=_make_generator_factory(rows),
+        interval_seconds=0,
+        max_messages=3,
+        bootstrap_reset_factory=lambda loop_count: {
+            "event_type": "bootstrap_reset",
+            "loop": loop_count,
+        },
+        sleep_fn=lambda _s: None,
+    )
+
+    assert sent_count == 3
+    sent_keys = [call.kwargs["key"] for call in producer.send.call_args_list]
+    assert sent_keys == [
+        "bootstrap_reset:1",
+        "2025-08-25 00:15:01",
+        "2025-08-25 00:15:02",
+        "bootstrap_reset:2",
+        "2025-08-25 00:15:01",
+    ]
+    first_marker = producer.send.call_args_list[0].kwargs["value"]
+    assert first_marker["event_type"] == "bootstrap_reset"
+    assert first_marker["published_at"].endswith("Z")

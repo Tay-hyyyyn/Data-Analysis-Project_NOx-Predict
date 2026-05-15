@@ -112,6 +112,18 @@ async def test_fetch_since_passes_composite_cursor_to_query(mock_session_factory
 
 
 @pytest.mark.asyncio
+async def test_fetch_since_does_not_filter_out_bootstrap_rows(mock_session_factory):
+    """producer loop reset 시 bootstrap upsert도 SensorBuffer로 전달되어야 한다."""
+    factory, session = mock_session_factory
+    _set_rows(session, [])
+    repo = SensorStreamRepository(factory)
+    await repo.fetch_since((datetime(2026, 5, 15, 10, 0, 0), 0), limit=10)
+
+    sql = str(session.execute.call_args[0][0])
+    assert "ingest_mode = 'stream'" not in sql
+
+
+@pytest.mark.asyncio
 async def test_latest_cursor_returns_tuple(mock_session_factory):
     factory, session = mock_session_factory
     latest_ts = datetime(2026, 5, 15, 10, 5, 0)

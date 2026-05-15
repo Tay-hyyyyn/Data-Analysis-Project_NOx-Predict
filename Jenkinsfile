@@ -11,6 +11,7 @@ pipeline {
         COMPOSE_FRONT_BACK = 'docker/docker-compose.yml'
         COMPOSE_DATA = 'docker/docker-compose.data.yml'
         COMPOSE_AIRFLOW_EC2 = 'docker/docker-compose.airflow.ec2.yml'
+        COMPOSE_KAFKA = 'docker/docker-compose.kafka.yml'
         CI_ENV_FILE = 'docker/.env.ci'
         DEPLOY_HOST = '15.165.247.216'
         DEPLOY_USER = 'ubuntu'
@@ -39,7 +40,8 @@ SLACK_WEBHOOK_URL=
             steps {
                 sh 'docker compose --env-file ${CI_ENV_FILE} -f ${COMPOSE_DATA} config --quiet'
                 sh 'docker compose --env-file ${CI_ENV_FILE} -f ${COMPOSE_FRONT_BACK} config --quiet'
-                sh 'docker compose --profile local-db --env-file ${CI_ENV_FILE} -f ${COMPOSE_FRONT_BACK} -f docker/docker-compose.prod.yml -f docker/docker-compose.ec2.yml -f ${COMPOSE_AIRFLOW_EC2} config --quiet'
+                sh 'docker compose --env-file ${CI_ENV_FILE} -f ${COMPOSE_KAFKA} --profile streaming config --quiet'
+                sh 'docker compose --profile local-db --profile streaming --env-file ${CI_ENV_FILE} -f ${COMPOSE_FRONT_BACK} -f docker/docker-compose.prod.yml -f docker/docker-compose.ec2.yml -f ${COMPOSE_AIRFLOW_EC2} -f ${COMPOSE_KAFKA} config --quiet'
             }
         }
 
@@ -77,17 +79,19 @@ SLACK_WEBHOOK_URL=
                             git fetch origin ${DEPLOY_BRANCH}
                             git checkout ${DEPLOY_BRANCH}
                             git pull --ff-only origin ${DEPLOY_BRANCH}
-                            docker compose --profile local-db --env-file .env \
+                            docker compose --profile local-db --profile streaming --env-file .env \
                                 -f docker/docker-compose.yml \
                                 -f docker/docker-compose.prod.yml \
                                 -f docker/docker-compose.ec2.yml \
                                 -f docker/docker-compose.airflow.ec2.yml \
+                                -f docker/docker-compose.kafka.yml \
                                 up -d --build
-                            docker compose --profile local-db --env-file .env \
+                            docker compose --profile local-db --profile streaming --env-file .env \
                                 -f docker/docker-compose.yml \
                                 -f docker/docker-compose.prod.yml \
                                 -f docker/docker-compose.ec2.yml \
                                 -f docker/docker-compose.airflow.ec2.yml \
+                                -f docker/docker-compose.kafka.yml \
                                 ps
                             curl -fsS --retry 10 --retry-delay 3 --retry-connrefused http://localhost/api/health
                         "

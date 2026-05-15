@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SQL_FILE = PROJECT_ROOT / "database" / "sensor_data_stream.sql"
 TABLE_NAME = "sensor_data_stream"
+BOOTSTRAP_RESET_EVENT = "bootstrap_reset"
 
 BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:19092")
 TOPIC = os.getenv("KAFKA_SENSOR_TOPIC", "noxo.sensor.raw")
@@ -146,6 +147,10 @@ def transform_message_to_row(
         raise ValueError(f"missing required tags: {missing_tags}")
 
     return row
+
+
+def is_bootstrap_reset_message(message: dict) -> bool:
+    return message.get("event_type") == BOOTSTRAP_RESET_EVENT
 
 
 def upsert_stream_row(engine, row: dict) -> None:
@@ -281,6 +286,18 @@ def run_consumer() -> None:
                 AUTO_OFFSET_RESET,
             )
             for record in consumer:
+                if is_bootstrap_reset_message(record.value):
+                    bootstrap_count = bootstrap_stream_table(engine)
+                    logger.info(
+                        "stream_etl_bootstrap_reset table=%s count=%s minutes=%s topic=%s partition=%s offset=%s",
+                        TABLE_NAME,
+                        bootstrap_count,
+                        BOOTSTRAP_MINUTES,
+                        record.topic,
+                        record.partition,
+                        record.offset,
+                    )
+                    continue
                 row = transform_message_to_row(
                     record.value,
                     stream_topic=record.topic,

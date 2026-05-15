@@ -56,10 +56,11 @@ StreamCursor = tuple[datetime, int]
 
 
 class SensorStreamRepository:
-    """sensor_data_stream의 stream-mode row를 (ingested_at, id) ASC로 polling.
+    """sensor_data_stream row를 (ingested_at, id) ASC로 polling.
 
-    bootstrap row는 별도 경로(KafkaSensorStream의 CSV)에서 들어오므로
-    `ingest_mode='stream'`으로 한정해 중복 흡수를 방지한다.
+    startup bootstrap은 backend가 CSV에서 직접 채운다. 이후 producer loop가
+    bootstrap reset marker를 보낼 때 stream ETL이 bootstrap rows를 다시 upsert하므로
+    poller는 bootstrap/stream 둘 다 읽어 세션 버퍼가 새 replay cycle을 따라가게 한다.
     """
 
     def __init__(self, db_session_factory: sessionmaker[Session]):
@@ -91,7 +92,6 @@ class SensorStreamRepository:
             SELECT id, measured_at, ingested_at, {col_list}
             FROM sensor_data_stream
             WHERE (ingested_at, id) > (:cursor_ts, :cursor_id)
-              AND ingest_mode = 'stream'
             ORDER BY ingested_at ASC, id ASC
             LIMIT :limit
             """
@@ -114,7 +114,6 @@ class SensorStreamRepository:
             """
             SELECT ingested_at, id
             FROM sensor_data_stream
-            WHERE ingest_mode = 'stream'
             ORDER BY ingested_at DESC, id DESC
             LIMIT 1
             """

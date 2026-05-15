@@ -188,10 +188,15 @@ It does four things:
 3. consume Kafka messages from `noxo.sensor.raw`
 4. upsert transformed rows into PostgreSQL
 
+When the producer reaches the end of the test CSV and starts a new loop, it sends a `bootstrap_reset` control message first. The stream ETL consumer treats that message as a signal to preload the first 15 minutes again, then continues with normal stream rows from 00:15:00 onward.
+
 ## Consumer runtime config
 
 Important environment variables:
 
+- `SENSOR_STREAM_POLL_ENABLED`
+- `SENSOR_STREAM_POLL_INTERVAL_SEC`
+- `SENSOR_STREAM_POLL_BATCH_SIZE`
 - `STREAM_ETL_DATABASE_URL`
 - `STREAM_ETL_POSTGRES_HOST`
 - `STREAM_ETL_POSTGRES_PORT`
@@ -204,6 +209,7 @@ Important environment variables:
 - `KAFKA_ETL_CONSUMER_GROUP_ID`
 - `KAFKA_BOOTSTRAP_FILE`
 - `KAFKA_BOOTSTRAP_MINUTES`
+- `KAFKA_EMIT_BOOTSTRAP_RESET`
 - `STREAM_ETL_BOOTSTRAP_ENABLED`
 - `KAFKA_ETL_AUTO_OFFSET_RESET`
 - `KAFKA_ETL_CONSUMER_TIMEOUT_MS`
@@ -211,6 +217,9 @@ Important environment variables:
 
 Recommended default:
 
+- `KAFKA_STREAM_ENABLED=false`
+- `SENSOR_STREAM_POLL_ENABLED=true` on App EC2 when using Plan B
+- `KAFKA_EMIT_BOOTSTRAP_RESET=true`
 - `STREAM_ETL_POSTGRES_HOST=postgres` when the consumer runs in Docker on EC2
 - `KAFKA_ETL_AUTO_OFFSET_RESET=latest`
 - `KAFKA_ETL_CONSUMER_TIMEOUT_MS=0`
@@ -218,7 +227,9 @@ Recommended default:
 Reason:
 
 - the stream ETL consumer runs inside the Docker network, so it should reach PostgreSQL through the compose service name instead of host-only names such as `host.docker.internal`
+- backend should poll `sensor_data_stream` instead of consuming the same Kafka topic directly, otherwise two independent consumers can write inconsistent data into the in-memory buffer
 - bootstrap already fills the initial replay window into `sensor_data_stream`
+- the producer reset marker lets the next replay cycle reinsert the 15-minute bootstrap window before live rows resume
 - the live consumer should wait for new Kafka messages after startup
 - using `earliest` can replay old topic history and overwrite bootstrap rows with `ingest_mode='stream'`
 - using a positive consumer timeout makes the service repeatedly leave and rejoin its consumer group when no messages are available
@@ -246,10 +257,10 @@ redpanda up
 
 ```text
 redpanda up
--> backend up
 -> kafka-etl-consumer up
--> kafka-producer run
--> bootstrap/latest API check
+-> kafka-producer up
+-> backend up with SENSOR_STREAM_POLL_ENABLED=true
+-> backend WebSocket/dashboard check
 -> sensor_data_stream row check
 ```
 
