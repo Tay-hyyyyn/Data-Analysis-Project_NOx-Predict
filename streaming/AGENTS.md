@@ -12,7 +12,7 @@ IGCC 가스터빈 운전 데이터(`NOx_test_20250825.csv`)를 1초 간격으로
 
 - `producer.py` — CSV → Kafka 발행 (`KafkaProducer`)
   - 기본 토픽 `noxo.sensor.raw`, 부트스트랩 `localhost:19092`
-  - bootstrap 분(`KAFKA_BOOTSTRAP_MINUTES`, 기본 15) 이후 행부터 발행
+  - loop 시작 시 bootstrap reset marker 발행 후 bootstrap 분(`KAFKA_BOOTSTRAP_MINUTES`, 기본 15) 이후 행부터 발행
 - `etl_consumer.py` — Kafka → PostgreSQL 적재
   - 대상 테이블 `sensor_data_stream` (DDL: `database/sensor_data_stream.sql`)
   - consumer group `noxo-stream-etl`
@@ -23,7 +23,7 @@ IGCC 가스터빈 운전 데이터(`NOx_test_20250825.csv`)를 1초 간격으로
 
 기술 스택: kafka-python 2.0, SQLAlchemy 2.0, psycopg 3.2, Redpanda(Kafka 호환)
 
-주요 환경변수: `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_SENSOR_TOPIC`, `KAFKA_INPUT_FILE`, `KAFKA_PRODUCE_INTERVAL_SECONDS`, `KAFKA_MAX_MESSAGES`, `KAFKA_BOOTSTRAP_MINUTES`, `KAFKA_ETL_CONSUMER_GROUP_ID`, `STREAM_ETL_DATABASE_URL`, `STREAM_ETL_POSTGRES_HOST`, `STREAM_ETL_POSTGRES_PORT`, `DATABASE_URL`.
+주요 환경변수: `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_SENSOR_TOPIC`, `KAFKA_INPUT_FILE`, `KAFKA_PRODUCE_INTERVAL_SECONDS`, `KAFKA_MAX_MESSAGES`, `KAFKA_EMIT_BOOTSTRAP_RESET`, `KAFKA_BOOTSTRAP_MINUTES`, `KAFKA_ETL_CONSUMER_GROUP_ID`, `STREAM_ETL_DATABASE_URL`, `STREAM_ETL_POSTGRES_HOST`, `STREAM_ETL_POSTGRES_PORT`, `DATABASE_URL`.
 
 ## 3. HOW — 일반적인 수정은 어떻게 하는가
 
@@ -31,7 +31,7 @@ IGCC 가스터빈 운전 데이터(`NOx_test_20250825.csv`)를 1초 간격으로
 - **새 입력 CSV**: `sensor_csv.py::DEFAULT_INPUT_FILE` 또는 `KAFKA_INPUT_FILE` 환경변수로 전환. 컬럼 헤더 변경 시 `parse_value` 호환성 점검.
 - **새 적재 컬럼**: `database/sensor_data_stream.sql` 수정 → `etl_consumer.py`의 INSERT 컬럼 동기화 → [`database/AGENTS.md`](../database/AGENTS.md) 영향 평가.
 - **로컬 검증**: `docker compose -f docker/docker-compose.kafka.yml up -d`로 Redpanda + producer + etl-consumer 일괄 기동.
-- **자동 루프**: `producer.py`의 `run_producer_loop`는 CSV 소진 시 처음(15분 이후)부터 재발행. `KAFKA_MAX_MESSAGES=0`(기본)이면 무한, `> 0`이면 N개 후 종료.
+- **자동 루프**: `producer.py`의 `run_producer_loop`는 loop 시작마다 bootstrap reset marker를 보낸 뒤 CSV의 15분 이후 구간을 재발행. `KAFKA_MAX_MESSAGES=0`(기본)이면 무한, `> 0`이면 N개 후 종료.
 
 ## 4. ⛔ HOW NOT — 시스템을 깨뜨리는 비명백한 함정
 
@@ -60,7 +60,7 @@ IGCC 가스터빈 운전 데이터(`NOx_test_20250825.csv`)를 1초 간격으로
 - **`sensor_data` vs `sensor_data_stream` 분리**: batch ETL(Airflow)의 `sensor_data`는 학습/조회용 정제 데이터, streaming의 `sensor_data_stream`은 실시간 시뮬용 raw. 두 경로의 적재 정책/스키마가 달라 분리.
 - **Redpanda 채택 이유**: Kafka 호환 + JVM 불요로 로컬/EC2 리소스 절약. 운영 동작은 동일.
 - **사건 이력**: stream ETL의 `auto_offset_reset` 기본값이 잘못 설정돼 재기동마다 전체 토픽을 재적재하던 이슈가 PR #54에서 수정됨.
-- **producer 자동 루프 도입 배경**: 시연 데이터가 하루치 CSV 1개뿐이라, 단발 발행으로는 23시간 45분 이후 데이터 흐름이 끊긴다. 시각상 "이음매"(CSV 끝→처음 점프)는 시연 데이터 특성상 허용.
+- **producer 자동 루프 도입 배경**: 시연 데이터가 하루치 CSV 1개뿐이라, 단발 발행으로는 23시간 45분 이후 데이터 흐름이 끊긴다. loop 시작 marker를 통해 stream ETL이 초기 15분을 다시 upsert한 뒤 00:15:00 이후 live replay로 이어가게 한다.
 
 ## 7. COMMANDS — 빌드/테스트/린트
 

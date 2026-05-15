@@ -31,3 +31,14 @@ def test_database_url_can_be_built_from_postgres_components(monkeypatch):
         etl_consumer.get_database_url()
         == "postgresql+psycopg://root:secret@postgres:5432/igcc_db"
     )
+
+
+def test_bootstrap_reset_message_detection():
+    import streaming.etl_consumer as etl_consumer
+
+    assert etl_consumer.is_bootstrap_reset_message(
+        {"event_type": "bootstrap_reset"}
+    )
+    assert not etl_consumer.is_bootstrap_reset_message(
+        {"measured_at": "2025-08-25 00:15:00", "values": {}}
+    )

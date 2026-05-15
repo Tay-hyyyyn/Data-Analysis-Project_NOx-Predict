@@ -18,6 +18,10 @@ INPUT_FILE = Path(os.getenv("KAFKA_INPUT_FILE", str(DEFAULT_INPUT_FILE)))
 INTERVAL_SECONDS = float(os.getenv("KAFKA_PRODUCE_INTERVAL_SECONDS", "1"))
 MAX_MESSAGES = int(os.getenv("KAFKA_MAX_MESSAGES", "0"))
 BOOTSTRAP_MINUTES = int(os.getenv("KAFKA_BOOTSTRAP_MINUTES", "15"))
+EMIT_BOOTSTRAP_RESET = (
+    os.getenv("KAFKA_EMIT_BOOTSTRAP_RESET", "true").lower() == "true"
+)
+BOOTSTRAP_RESET_EVENT = "bootstrap_reset"
 
 
 def build_producer() -> KafkaProducer:
@@ -35,6 +39,7 @@ def run_producer_loop(
     generator_factory: Callable[[], Iterable[dict]],
     interval_seconds: float,
     max_messages: int,
+    bootstrap_reset_factory: Callable[[int], dict] | None = None,
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> int:
     """CSV 소진 시 처음으로 회귀하며 발행 루프 실행.
@@ -49,6 +54,16 @@ def run_producer_loop(
     while True:
         loop_count += 1
         print(f"[Kafka Producer] loop #{loop_count} start")
+        if bootstrap_reset_factory is not None:
+            reset_message = bootstrap_reset_factory(loop_count)
+            reset_message["published_at"] = (
+                datetime.utcnow().isoformat(timespec="seconds") + "Z"
+            )
+            reset_key = f"{BOOTSTRAP_RESET_EVENT}:{loop_count}"
+            producer.send(topic, key=reset_key, value=reset_message)
+            print(
+                f"[Kafka Producer] bootstrap reset marker sent loop={loop_count}"
+            )
         sent_in_loop = 0
         for message in generator_factory():
             message["published_at"] = (
@@ -75,7 +90,8 @@ def main() -> None:
         "[Kafka Producer] start "
         f"topic={TOPIC}, bootstrap={BOOTSTRAP_SERVERS}, input={INPUT_FILE}, "
         f"skip_bootstrap_minutes={BOOTSTRAP_MINUTES}, "
-        f"max_messages={MAX_MESSAGES}, auto_loop={'on' if MAX_MESSAGES == 0 else 'off'}"
+        f"max_messages={MAX_MESSAGES}, auto_loop={'on' if MAX_MESSAGES == 0 else 'off'}, "
+        f"bootstrap_reset_marker={'on' if EMIT_BOOTSTRAP_RESET else 'off'}"
     )
 
     producer = build_producer()
@@ -89,6 +105,16 @@ def main() -> None:
             ),
             interval_seconds=INTERVAL_SECONDS,
             max_messages=MAX_MESSAGES,
+            bootstrap_reset_factory=(
+                (lambda loop_count: {
+                    "event_type": BOOTSTRAP_RESET_EVENT,
+                    "source": INPUT_FILE.name,
+                    "loop": loop_count,
+                    "bootstrap_minutes": BOOTSTRAP_MINUTES,
+                })
+                if EMIT_BOOTSTRAP_RESET
+                else None
+            ),
         )
     finally:
         producer.flush()

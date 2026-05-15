@@ -7,7 +7,7 @@
 App EC2에서 다음 흐름이 실제로 동작하는지 확인한다.
 
 ```text
-Redpanda -> backend consumer -> /api/streaming/latest
+Redpanda -> stream ETL consumer -> sensor_data_stream -> backend DB poller -> WebSocket
 ```
 
 필요하면 이후 producer도 같은 서버에서 테스트한다.
@@ -33,13 +33,19 @@ Redpanda -> backend consumer -> /api/streaming/latest
 
 ## Required Environment Variables
 
-backend consumer용:
+backend Plan B polling용:
 
 ```text
-KAFKA_STREAM_ENABLED=true
+KAFKA_STREAM_ENABLED=false
+SENSOR_STREAM_POLL_ENABLED=true
+SENSOR_STREAM_POLL_INTERVAL_SEC=1
+SENSOR_STREAM_POLL_BATCH_SIZE=200
 KAFKA_BOOTSTRAP_SERVERS=redpanda:9092
 KAFKA_SENSOR_TOPIC=noxo.sensor.raw
 KAFKA_CONSUMER_GROUP_ID=noxo-backend-stream
+KAFKA_BOOTSTRAP_MINUTES=15
+KAFKA_BOOTSTRAP_FILE=/app/data/raw/250811-250825/NOx_test_20250825.csv
+KAFKA_EMIT_BOOTSTRAP_RESET=true
 ```
 
 producer 테스트용 선택값:
@@ -55,21 +61,24 @@ KAFKA_MAX_MESSAGES=5
 - `digital_twin/models/` 아래 필요한 모델 파일 존재 확인
 - backend가 모델 누락으로 죽지 않는 상태인지 확인
 
-## Step 2. Redpanda Start
+## Step 2. Streaming Stack Start
 
 ```bash
-docker compose --env-file .env -f docker/docker-compose.kafka.yml up -d redpanda
+docker compose --env-file .env -f docker/docker-compose.kafka.yml --profile streaming up -d --build
 ```
 
 확인 포인트:
 
 - `noxo_redpanda` 컨테이너가 `Up`
+- `kafka-producer` 컨테이너가 `Up`
+- `docker-kafka-etl-consumer-1` 컨테이너가 `Up`
+- producer loop 시작 로그에 `bootstrap reset marker sent` 출력
 - 포트 바인딩 정책이 기존 서비스와 충돌하지 않음
 - backend가 접근할 내부 주소는 `redpanda:9092`
 
-## Step 3. Backend Consumer Start
+## Step 3. Backend Poller Start
 
-배포 compose 또는 실행 환경에 Kafka env를 포함한 뒤 backend 재기동:
+배포 compose 또는 실행 환경에 Plan B env를 포함한 뒤 backend 재기동:
 
 ```bash
 docker compose --env-file .env -f docker/docker-compose.yml -f docker/docker-compose.prod.yml up -d --build backend
@@ -78,24 +87,27 @@ docker compose --env-file .env -f docker/docker-compose.yml -f docker/docker-com
 확인 포인트:
 
 - backend startup 에러 없음
-- Kafka consumer 연결 로그 출력
-- `last_error`가 null 유지
+- `KAFKA_STREAM_ENABLED=false`
+- `SENSOR_STREAM_POLL_ENABLED=true`
+- backend가 `sensor_data_stream`을 1초 단위로 polling
 
-## Step 4. API Check
+## Step 4. DB Stream Check
 
 ```bash
-curl http://localhost:8000/api/streaming/latest
+SELECT ingest_mode,
+       COUNT(*) AS rows,
+       MIN(measured_at) AS start_at,
+       MAX(measured_at) AS end_at
+FROM sensor_data_stream
+GROUP BY ingest_mode
+ORDER BY ingest_mode;
 ```
 
 초기 기대값:
 
-```json
-{
-  "enabled": true,
-  "topic": "noxo.sensor.raw",
-  "latest": null,
-  "last_error": null
-}
+```text
+bootstrap | 900 | 2025-08-25 00:00:00 | 2025-08-25 00:14:59
+stream    | N   | 2025-08-25 00:15:00 | ...
 ```
 
 ## Step 5. Producer Test
@@ -109,20 +121,14 @@ KAFKA_MAX_MESSAGES=5 docker compose --env-file .env -f docker/docker-compose.kaf
 확인 포인트:
 
 - producer 로그에 `sent #1`부터 `sent #5` 출력
-- backend가 consumer로 메시지 수신
+- stream ETL consumer가 `sensor_data_stream`에 `ingest_mode='stream'`으로 upsert
 
-## Step 6. Latest API Recheck
-
-```bash
-curl http://localhost:8000/api/streaming/latest
-```
+## Step 6. Front/Backend Recheck
 
 기대 결과:
 
-- `latest`가 null이 아님
-- `latest.key`가 `2025-08-25 ...` 형태
-- `latest.message.source`가 `NOx_test_20250825.csv`
-- `last_error`가 null
+- backend session WebSocket에서 bootstrap 이후 stream 값이 이어짐
+- 새 stream row가 들어오면 dashboard 값이 갱신됨
 
 ## Step 7. External Check
 
@@ -140,11 +146,12 @@ curl http://localhost:8000/api/streaming/latest
 - backend 컨테이너 자체가 죽는지 먼저 확인
 - Kafka 문제가 아니라 모델 파일, startup exception일 수 있음
 
-`latest`가 계속 null
+dashboard 값이 갱신되지 않음
 
 - producer 미실행
 - topic 이름 불일치
-- backend consumer env 미적용
+- `kafka-etl-consumer` 미실행
+- `SENSOR_STREAM_POLL_ENABLED=true` 미적용
 - broker 주소 불일치
 
 `last_error`에 값이 생김
