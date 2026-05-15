@@ -353,6 +353,109 @@ async def test_stub_forecaster_not_blocked_by_warmup():
     assert payload["warning"] is None
 
 
+# Plan E 경계값 회귀 ------------------------------------------------------
+@pytest.mark.asyncio
+async def test_ml_forecaster_blocked_one_below_threshold():
+    """tick 후 buf_len == 449 (임계-1)는 차단되어야 한다.
+    `_step_session`이 매 tick recent_df_buffer.append(synthesized) 하므로 사전 447행 채우면 tick 후 449.
+    `_warmup_reason`의 조건이 `<`가 아니라 더 느슨해지면(예: `<= 448`) 통과되어 실패."""
+    from digital_twin.forecaster.preprocess import NOX_TARGET_COL, RAW_FEATURES
+    from digital_twin.forecaster.predict import DWATT_COL, TTXM_COL
+
+    buf = _make_buffer()
+    session = _make_session(mode="realtime")
+    base = {col: 1.0 for col in RAW_FEATURES}
+    base[TTXM_COL] = 580.0
+    base[DWATT_COL] = 165.0
+    # 시드 1행 + 447행 추가 = 448. tick에서 synthesize 1행 추가 → 449 (= 임계-1).
+    for i in range(447):
+        row = dict(base)
+        row[NOX_TARGET_COL] = 28.0 + (i % 10) * 0.1
+        session.context.recent_df_buffer.append(row)
+    assert len(session.context.recent_df_buffer) == 448
+
+    fc = _make_forecaster(predicted=42.5, name="ml")
+    ws = AsyncMock()
+    engine = RealtimeEngine(
+        settings=_make_settings(),
+        sensor_buffer=buf, simulator=_make_simulator(),
+        forecaster=fc, ws_manager=ws, sessions={"s1": session},
+    )
+    await engine._tick()
+
+    assert len(session.context.recent_df_buffer) == 449
+    fc.predict.assert_not_called()
+    payload = ws.broadcast.call_args[0][1]
+    assert payload["warning"] == "forecast warmup"
+
+
+@pytest.mark.asyncio
+async def test_ml_forecaster_filters_nan_and_bool_nox_values():
+    """NOx 컬럼에 NaN·bool·문자열이 섞여도 _warmup_reason은 안전하게 필터링한다.
+    필터 후 표본 수가 _FORECAST_MIN_NOX_SAMPLES 미만이면 nox_samples 사유로 차단."""
+    from digital_twin.forecaster.preprocess import NOX_TARGET_COL, RAW_FEATURES
+    from digital_twin.forecaster.predict import DWATT_COL, TTXM_COL
+
+    buf = _make_buffer()
+    session = _make_session(mode="realtime")
+    base = {col: 1.0 for col in RAW_FEATURES}
+    base[TTXM_COL] = 580.0
+    base[DWATT_COL] = 165.0
+    # buf_len 통과를 위해 460행 채우되 NOx는 모두 비숫자/NaN으로
+    invalid_values = [float("nan"), float("inf"), True, False, "bad", None]
+    for i in range(460):
+        row = dict(base)
+        row[NOX_TARGET_COL] = invalid_values[i % len(invalid_values)]
+        session.context.recent_df_buffer.append(row)
+
+    fc = _make_forecaster(predicted=42.5, name="ml")
+    ws = AsyncMock()
+    engine = RealtimeEngine(
+        settings=_make_settings(),
+        sensor_buffer=buf, simulator=_make_simulator(),
+        forecaster=fc, ws_manager=ws, sessions={"s1": session},
+    )
+    await engine._tick()
+
+    fc.predict.assert_not_called()
+    payload = ws.broadcast.call_args[0][1]
+    assert payload["warning"] == "forecast warmup"
+    assert payload["forecast"] is None
+
+
+@pytest.mark.asyncio
+async def test_ml_forecaster_passes_when_nox_std_above_threshold():
+    """nox_std > 1e-3 (충분한 변동)이면 차단 없이 predict 호출.
+    _FORECAST_MIN_NOX_STD가 엄격 부등식(`<`)임을 회귀 보호."""
+    from digital_twin.forecaster.preprocess import NOX_TARGET_COL, RAW_FEATURES
+    from digital_twin.forecaster.predict import DWATT_COL, TTXM_COL
+
+    buf = _make_buffer()
+    session = _make_session(mode="realtime")
+    base = {col: 1.0 for col in RAW_FEATURES}
+    base[TTXM_COL] = 580.0
+    base[DWATT_COL] = 165.0
+    # 28.0과 28.01 교차 → std ≈ 0.005 > 1e-3 → 통과 예상
+    for i in range(460):
+        row = dict(base)
+        row[NOX_TARGET_COL] = 28.0 + (i % 2) * 0.01
+        session.context.recent_df_buffer.append(row)
+
+    fc = _make_forecaster(predicted=42.5, name="ml")
+    ws = AsyncMock()
+    engine = RealtimeEngine(
+        settings=_make_settings(),
+        sensor_buffer=buf, simulator=_make_simulator(),
+        forecaster=fc, ws_manager=ws, sessions={"s1": session},
+    )
+    await engine._tick()
+
+    fc.predict.assert_called_once()
+    payload = ws.broadcast.call_args[0][1]
+    assert payload["warning"] is None
+    assert payload["forecast"] is not None
+
+
 # NOx 15% O2 보정식 ----------------------------------------------------------
 def test_correct_nox_15pct_typical():
     # 표준 보정식: 30ppm @ 14% O2 → 30 * 5.9 / 6.9 ≈ 25.652

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 import math
 from contextlib import suppress
@@ -39,6 +40,11 @@ _FORECAST_MIN_VALID_ROWS = 450
 # NOx 분산 stagnation 임계 — std < 1e-3 또는 unique<=1이면 lag/diff feature가 0이 되어
 # 학습 분포 밖 영역. 진짜 정상 운전에서도 NOx는 ±0.5ppm 수준 변동이 있어 안전 마진.
 _FORECAST_MIN_NOX_STD = 1e-3
+# Stagnation 판정 시 스캔할 최근 행 수 — 학습 시 NOx rolling std 윈도우(300s)와 정합.
+# preprocess.NOX_LAG_FEATURES의 `nox_roll_std_300s`와 의미론적으로 동일하게 유지.
+_FORECAST_STAGNATION_SCAN_SEC = 300
+# 표본 표준편차 계산을 위한 최소 표본 수 — n-1 분모 정의상 2 필요.
+_FORECAST_MIN_NOX_SAMPLES = 2
 
 # NOx 15% O2 표준 보정식의 기준 산소 농도 [%]
 # nox_15pct = nox * (20.9 - 15) / (20.9 - o2)
@@ -402,18 +408,19 @@ class RealtimeEngine:
         # NOx stagnation — 지역 import는 sys.modules 캐시되어 비용 없음.
         from digital_twin.forecaster.preprocess import NOX_TARGET_COL
 
-        # deque[dict] → 최근 300행만 스캔(stagnation은 단기 신호로 충분).
-        scan_n = min(300, buf_len)
+        # deque[dict] → 최근 scan_n 행만 스캔(stagnation은 단기 신호로 충분).
+        # itertools.islice로 list 전체 복사 없이 deque iteration O(n) 슬라이싱.
+        scan_n = min(_FORECAST_STAGNATION_SCAN_SEC, buf_len)
         nox_vals: list[float] = []
-        for row in list(buf)[-scan_n:]:
+        for row in itertools.islice(buf, buf_len - scan_n, buf_len):
             v = row.get(NOX_TARGET_COL)
             if isinstance(v, bool) or not isinstance(v, (int, float)):
                 continue
             f = float(v)
             if math.isfinite(f):
                 nox_vals.append(f)
-        if len(nox_vals) < 2:
-            return f"nox_samples={len(nox_vals)}<2"
+        if len(nox_vals) < _FORECAST_MIN_NOX_SAMPLES:
+            return f"nox_samples={len(nox_vals)}<{_FORECAST_MIN_NOX_SAMPLES}"
         # 표본분산 — 평균 1회 + 차분 합산. numpy 없이 운영 의존성 최소화.
         mean = sum(nox_vals) / len(nox_vals)
         var = sum((x - mean) ** 2 for x in nox_vals) / (len(nox_vals) - 1)
