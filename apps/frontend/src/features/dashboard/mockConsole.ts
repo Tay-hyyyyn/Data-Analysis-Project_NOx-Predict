@@ -382,9 +382,12 @@ export function createStateFromSnapshot(
     variables,
     metrics,
     history: previous?.history ?? [],
-    // snapshot에는 tick이 없다. 재연결 직후 sticky가 불필요하게 재평가되지
-    // 않도록 직전 tick을 보존(없으면 0).
-    tick: previous?.tick ?? 0,
+    // snapshot.t(시뮬 경과 초, 단조 증가)를 tick 소스로 사용한다.
+    // ForecastCard는 tick !== seenTick으로 "새 payload 도착"만 감지하므로
+    // 정수 카운터일 필요는 없고 단조 변화값이면 된다. 직전 tick fallback은
+    // 세션 0 시작값이 이전 세션 잔존 seenTick과 우연히 충돌해 첫 step이
+    // 누락되는 것을 피한다.
+    tick: snapshot.t ?? previous?.tick ?? 0,
     forecast: previous?.forecast ?? null,
     warning: previous?.warning ?? null,
     overrideActive: previous?.overrideActive ?? false,
