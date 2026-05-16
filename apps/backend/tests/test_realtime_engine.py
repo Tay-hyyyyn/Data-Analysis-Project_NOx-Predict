@@ -380,6 +380,49 @@ async def test_stale_grace_counter_resets_on_normal_tick():
 
 
 @pytest.mark.asyncio
+async def test_realtime_mode_rejects_override_so_stale_hold_is_override_free():
+    """realtime 모드는 override 설정을 거부 → stale-hold가 override 값과
+    모순될 수 없음을 보장하는 회귀 가드.
+
+    set_mode("realtime")가 control_override=None을 강제하고 set_override가
+    realtime에서 SessionModeConflictError를 던지므로, "realtime + override +
+    stale" 조합은 코드상 발생 불가. stale-hold 시 input_controls/current는
+    항상 kafka 추종값으로 계산된다.
+    """
+    from app.exceptions import SessionModeConflictError
+
+    session = _make_session(mode="realtime")
+    assert session.control_override is None  # realtime 진입 시 해제 확인
+
+    with pytest.raises(SessionModeConflictError):
+        session.set_override(ControlVars(
+            syngas_flow=999.0, igv_opening=80.0, n2_offset=5.0, n2_valve_1=42.0,
+            syngas_srv=60.0, syngas_gcv_1=55.0, syngas_gcv_1a=54.0,
+            syngas_gcv_2=53.0, ibh_valve=30.0, n2_flow=25.0,
+        ))
+    assert session.control_override is None  # 거부 후에도 여전히 None
+
+    # stale-hold가 실제로 override 없이 정상 동작하는지 확인
+    buf = _make_buffer()
+    sessions = {"s1": session}
+    fc = _make_forecaster(predicted=12.1)
+    ws = AsyncMock()
+    engine = RealtimeEngine(
+        settings=_make_settings(),
+        sensor_buffer=buf, simulator=_make_simulator(),
+        forecaster=fc, ws_manager=ws, sessions=sessions,
+    )
+    await engine._tick()  # latch ON
+    engine.sensor_buffer = SensorBuffer(maxlen=10)
+    await engine._tick()  # stale → hold
+
+    payload = ws.broadcast.call_args[0][1]
+    assert payload["override_active"] is False
+    assert payload["warning"] is None
+    assert payload["forecast"]["predicted_nox"] == 12.1
+
+
+@pytest.mark.asyncio
 async def test_tick_increments_session_tick():
     buf = _make_buffer()
     session = _make_session()

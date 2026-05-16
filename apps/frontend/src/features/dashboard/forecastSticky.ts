@@ -24,40 +24,46 @@ export const initialForecastStickyState: ForecastStickyState = {
 // 프론트에서 한 번 더 흡수하는 이중 방어.
 export const FORECAST_STICKY_TICKS = 4
 
-/**
- * 새 payload 1개를 sticky 상태에 반영한 다음 상태를 반환하는 순수 함수.
- *
- * ready면 lastReady 갱신 + streak 리셋, not-ready면 streak 증가.
- * 상태가 실제로 바뀌지 않으면 동일 참조를 반환해 불필요한 리렌더를 막는다.
- */
-export function reduceForecastSticky(
-  prev: ForecastStickyState,
-  forecast: RealtimeStreamPayload['forecast'],
-  warning: RealtimeStreamPayload['warning'],
-): ForecastStickyState {
-  if (isForecastReady(forecast, warning)) {
-    if (prev.lastReady === forecast && prev.notReadyStreak === 0) return prev
-    return { lastReady: forecast, notReadyStreak: 0 }
-  }
-  if (prev.lastReady === null) return prev
-  return { lastReady: prev.lastReady, notReadyStreak: prev.notReadyStreak + 1 }
+export interface ForecastStickyStep {
+  /** 이 payload 반영 후 다음 state (참조 동일하면 추가 리렌더 없음) */
+  next: ForecastStickyState
+  /** 화면에 표시할 forecast — null이면 "준비 중" 폴백 */
+  effective: ForecastPayload | null
 }
 
 /**
- * sticky 상태 기준으로 실제 화면에 표시할 forecast를 고른다.
+ * payload 1개를 sticky 상태에 반영하고, 그 즉시 표시할 forecast까지 함께
+ * 반환하는 단일 순수 함수. state 갱신과 표시 판정을 한 곳에 모아
+ * (reduce → resolve 2단계의) 한 렌더 지연 / grace 경계 불일치를 제거한다.
  *
- * - ready: 그 forecast 즉시 표시
- * - not-ready & grace 이내: 직전 ready forecast를 그대로 hold (깜빡임 차단)
- * - grace 소진: null → "준비 중" 폴백
+ * - ready              : lastReady 갱신·streak 0, 그 forecast 즉시 표시
+ * - not-ready & grace내 : streak 증가, 직전 ready forecast를 hold (깜빡임 차단)
+ * - not-ready & grace초과: streak 증가, null → "준비 중" 폴백
+ * - lastReady 없음(warmup 전): state 불변, null
+ *
+ * state가 실제로 바뀌지 않으면 prev를 그대로 돌려줘 불필요한 리렌더를 막는다.
  */
-export function resolveEffectiveForecast(
-  state: ForecastStickyState,
+export function stepForecastSticky(
+  prev: ForecastStickyState,
   forecast: RealtimeStreamPayload['forecast'],
   warning: RealtimeStreamPayload['warning'],
-): ForecastPayload | null {
-  if (isForecastReady(forecast, warning)) return forecast
-  if (state.lastReady !== null && state.notReadyStreak < FORECAST_STICKY_TICKS) {
-    return state.lastReady
+): ForecastStickyStep {
+  if (isForecastReady(forecast, warning)) {
+    const next =
+      prev.lastReady === forecast && prev.notReadyStreak === 0
+        ? prev
+        : { lastReady: forecast, notReadyStreak: 0 }
+    return { next, effective: forecast }
   }
-  return null
+
+  // 한 번도 ready였던 적이 없으면 (새 세션 warmup 전) hold할 값이 없다.
+  if (prev.lastReady === null) {
+    return { next: prev, effective: null }
+  }
+
+  const notReadyStreak = prev.notReadyStreak + 1
+  const next: ForecastStickyState = { lastReady: prev.lastReady, notReadyStreak }
+  const effective =
+    notReadyStreak <= FORECAST_STICKY_TICKS ? prev.lastReady : null
+  return { next, effective }
 }

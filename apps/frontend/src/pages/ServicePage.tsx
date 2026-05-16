@@ -12,8 +12,7 @@ import {
 } from '../features/dashboard/mockConsole'
 import {
   initialForecastStickyState,
-  reduceForecastSticky,
-  resolveEffectiveForecast,
+  stepForecastSticky,
 } from '../features/dashboard/forecastSticky'
 import { useConsoleState, type StreamStatus } from '../features/dashboard/useConsoleState'
 
@@ -339,6 +338,7 @@ export function ServicePage() {
             <ForecastCard
               forecast={state.forecast}
               warning={state.warning}
+              tick={state.tick}
               noxLimit={thresholds.noxLimit}
               currentNox={state.metrics.nox15pct}
             />
@@ -671,14 +671,20 @@ export function ServicePage() {
   )
 }
 
-function ForecastCard({
+// 테스트에서 sticky 디바운스 동작을 컴포넌트 레벨로 검증하기 위해 export.
+export function ForecastCard({
   forecast,
   warning,
+  tick,
   noxLimit,
   currentNox,
 }: {
   forecast: RealtimeStreamPayload['forecast']
   warning: RealtimeStreamPayload['warning']
+  // 단조 증가 tick (WS payload 1개당 +1). payload 객체 동일성 대신 tick
+  // 변화로 "새 payload 도착"을 감지한다. forecast=null이 연속돼도 (지속
+  // stale) tick은 매번 증가하므로 streak가 정확히 누적된다.
+  tick: number
   noxLimit: number
   currentNox: number
 }) {
@@ -687,21 +693,23 @@ function ForecastCard({
   // 단발 stale/warning payload 1개로 ForecastCard가 "값 → 준비 중 → 값"
   // 깜빡이는 것을 막는다. 백엔드 stale grace와 이중 방어.
   //
-  // payload 변화에 렌더 중 setState로 반응하는 React 공식 derived-state 패턴.
-  // (참조 동일 시 reduceForecastSticky가 동일 state를 반환해 추가 렌더 없음.)
+  // tick이 바뀐 렌더에서만 step을 1회 적용하는 React 공식 derived-state
+  // 패턴. streak 누적과 표시값(effective)을 함께 state로 확정 보관해,
+  // setSticky 후 재렌더나 같은 tick의 부수 재렌더에서 streak가 재누적되지
+  // 않게 한다(멱등). stepForecastSticky가 한 번에 계산하므로 한 렌더 지연도 없다.
   const [sticky, setSticky] = useState(initialForecastStickyState)
-  const [seenForecast, setSeenForecast] =
+  const [seenTick, setSeenTick] = useState(-1)
+  const [effectiveForecast, setEffectiveForecast] =
     useState<RealtimeStreamPayload['forecast']>(null)
-  const [seenWarning, setSeenWarning] =
-    useState<RealtimeStreamPayload['warning']>(null)
 
-  if (forecast !== seenForecast || warning !== seenWarning) {
-    setSeenForecast(forecast)
-    setSeenWarning(warning)
-    setSticky((prev) => reduceForecastSticky(prev, forecast, warning))
+  if (tick !== seenTick) {
+    const step = stepForecastSticky(sticky, forecast, warning)
+    setSeenTick(tick)
+    if (step.next !== sticky) setSticky(step.next)
+    if (step.effective !== effectiveForecast) {
+      setEffectiveForecast(step.effective)
+    }
   }
-
-  const effectiveForecast = resolveEffectiveForecast(sticky, forecast, warning)
 
   if (effectiveForecast === null) {
     return (
