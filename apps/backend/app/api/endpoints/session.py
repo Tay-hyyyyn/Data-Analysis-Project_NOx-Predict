@@ -1,82 +1,155 @@
+"""세션 관리 + 모드/override 엔드포인트 (spec §2.1)."""
+
+from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
-from app.api.deps import get_session_service
-from digital_twin.simulation import SimulationState
-from app.schemas.common import AckResponse
+from app.api.deps import get_realtime_engine, get_session_service
+from app.core.session import Session
+from app.exceptions import SessionLimitExceededError, SessionNotFoundError
 from app.schemas.session import (
     ControlPayload,
-    OutputPayload,
-    SnapshotResponse,
-    StartSessionRequest,
-    StartSessionResponse,
+    SessionInfoResponse,
+    SessionModeRequest,
+    SessionModeResponse,
+    SessionResetResponse,
+    SessionStartResponse,
 )
 from app.services.session_service import SessionService
 
 router = APIRouter(prefix="/session", tags=["session"])
 
 SessionServiceDep = Annotated[SessionService, Depends(get_session_service)]
+RealtimeEngineDep = Annotated[object, Depends(get_realtime_engine)]
 
 
-def _to_snapshot(state: SimulationState) -> SnapshotResponse:
-    return SnapshotResponse(
-        sid=state.sid,
-        t=round(state.t, 3),
-        target=ControlPayload(
-            **{
-                "IGCC.CC.G1.ca_fqsg_cl": state.target.syngas_flow,
-                "IGCC.CC.G1.NQKR3_MONITOR": state.target.n2_offset,
-                "IGCC.CC.G1.csgv": state.target.igv_opening,
-            }
-        ),
-        current=ControlPayload(
-            **{
-                "IGCC.CC.G1.ca_fqsg_cl": state.current.syngas_flow,
-                "IGCC.CC.G1.NQKR3_MONITOR": state.current.n2_offset,
-                "IGCC.CC.G1.csgv": state.current.igv_opening,
-            }
-        ),
-        output=OutputPayload(
-            nox=state.output.nox,
-            co=state.output.co,
-            exhaust_temp=state.output.exhaust_temp,
-            power=state.output.power,
-            **{"lambda": state.output.lambda_},
-        ),
-        warning=state.warning,
-        last_updated=state.last_updated,
+def _serialize_override(session: Session) -> ControlPayload | None:
+    if session.control_override is None:
+        return None
+    return ControlPayload.from_controlvars(session.control_override)
+
+
+@router.post("/start", response_model=SessionStartResponse)
+def start_session(
+    service: SessionServiceDep,
+    body: dict | None = None,
+) -> SessionStartResponse:
+    """세션 생성. initial_condition은 deprecated (무시)."""
+    try:
+        session = service.start()
+    except SessionLimitExceededError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    return SessionStartResponse(
+        sid=session.sid,
+        mode=session.mode,
+        control_override=_serialize_override(session),
+        created_at=session.created_at,
     )
 
 
-@router.post("/start", response_model=StartSessionResponse)
-async def start_session(
-    body: StartSessionRequest,
+@router.get("/{sid}", response_model=SessionInfoResponse)
+def get_session(
+    sid: str,
     service: SessionServiceDep,
-) -> StartSessionResponse:
-    """async — service.start 내부에서 asyncio.create_task를 호출하므로
-    엔드포인트가 event loop 위에서 실행되어야 한다."""
-    initial = body.initial_condition.to_domain() if body.initial_condition else None
-    state = service.start(initial)
-    return StartSessionResponse(sid=state.sid, snapshot=_to_snapshot(state))
+) -> SessionInfoResponse:
+    try:
+        session = service.get(sid)
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return SessionInfoResponse(
+        sid=session.sid,
+        mode=session.mode,
+        control_override=_serialize_override(session),
+        created_at=session.created_at,
+        last_active_at=session.last_active_at,
+    )
 
 
-@router.post("/{sid}/control", response_model=AckResponse)
-async def submit_control(
+@router.get("/{sid}/snapshot")
+def get_session_snapshot(
+    sid: str,
+    service: SessionServiceDep,
+    realtime_engine: RealtimeEngineDep,
+) -> dict:
+    """프론트 WebSocket 재연결용 마지막 payload snapshot."""
+    try:
+        service.get(sid)
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    payload = realtime_engine.last_payload(sid)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="snapshot not available yet")
+
+    outputs = dict(payload["current"]["outputs"])
+    if payload.get("forecast") is not None:
+        outputs["predicted_nox"] = payload["forecast"]["predicted_nox"]
+
+    return {
+        "sid": sid,
+        "t": payload["tick"],
+        "current": payload["current"]["controls"],
+        "output": outputs,
+        "warning": payload.get("warning") is not None,
+        "last_updated": payload["ts"],
+    }
+
+
+@router.post("/{sid}/mode", response_model=SessionModeResponse)
+def set_mode(
+    sid: str,
+    body: SessionModeRequest,
+    service: SessionServiceDep,
+) -> SessionModeResponse:
+    try:
+        session = service.set_mode(sid, body.mode)
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return SessionModeResponse(
+        sid=session.sid,
+        mode=session.mode,
+        control_override=_serialize_override(session),
+        changed_at=datetime.now(timezone.utc),
+    )
+
+
+@router.post("/{sid}/reset", response_model=SessionResetResponse)
+def reset_override(
+    sid: str,
+    service: SessionServiceDep,
+) -> SessionResetResponse:
+    try:
+        session = service.reset_override(sid)
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return SessionResetResponse(
+        sid=session.sid,
+        control_override=_serialize_override(session),
+        reset_at=datetime.now(timezone.utc),
+    )
+
+
+@router.post("/{sid}/control")
+def submit_control(
     sid: str,
     payload: ControlPayload,
     service: SessionServiceDep,
-) -> AckResponse:
-    service.submit_control(sid, payload.to_domain())
-    return AckResponse()
+) -> dict:
+    """제어 입력 (sim 모드 전용; realtime이면 SessionModeConflictError → 409)."""
+    try:
+        service.submit_control(sid, payload.to_domain())
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ok": True, "control_override_set": True}
 
 
-@router.post("/{sid}/stop", response_model=AckResponse)
-async def stop_session(sid: str, service: SessionServiceDep) -> AckResponse:
+@router.post("/{sid}/stop")
+async def stop_session(
+    sid: str,
+    service: SessionServiceDep,
+) -> dict:
     await service.stop(sid)
-    return AckResponse()
-
-
-@router.get("/{sid}/snapshot", response_model=SnapshotResponse)
-async def get_snapshot(sid: str, service: SessionServiceDep) -> SnapshotResponse:
-    return _to_snapshot(service.get(sid))
+    return {"ok": True}

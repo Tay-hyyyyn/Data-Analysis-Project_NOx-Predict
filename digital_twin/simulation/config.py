@@ -23,13 +23,25 @@ from dataclasses import dataclass, field
 # ============================================================
 @dataclass(frozen=True)
 class OperatingPoint:
-    """기준(정격) 운전점. 파생 피처 계산 기준값으로 사용된다."""
+    """기준(정격) 운전점. 파생 피처 계산 기준값으로 사용된다.
 
-    syngas_flow: float = 1500.0    # 합성가스 유량 기준점 [단위 미정, 가안]
-    n2_offset: float = 200.0       # 희석질소 오프셋 기준점 [단위 미정, 가안]
-    igv_opening: float = 75.0      # IGV 개도 기준점 [%]
-    exhaust_temp: float = 580.0    # 배기온도 기준점 [°C] IGCC.CC.G1.TTXM 평균 가안
-    air_flow: float = 4500.0       # IGV 75%일 때 추정 공기유량 [kg/h, 가안]
+    제어 변수 10개 + 배기온도의 기준값. 학습 CSV(NOx_test_20250825.csv)
+    정상 운전 구간(DWATT>50MW, 86401행)의 median 값.
+    """
+
+    # 학습 CSV mean/median 기반 (정상 운전 86401행, DWATT>50MW)
+    syngas_flow: float = 43.0      # ca_fqsg_cl [kg/s] median=43.03
+    igv_opening: float = 63.0      # csgv [%] median=62.83
+    n2_offset: float = -10.0       # NQKR3_MONITOR median=-9.98
+    n2_valve_1: float = 27.5       # nicvs1 [%] median=27.45
+    syngas_srv: float = 38.6       # FSAGR [%] median=38.64
+    syngas_gcv_1: float = 72.6     # FSAG11 [%] median=72.61
+    syngas_gcv_1a: float = 43.7    # FSAG11A [%] median=43.67
+    syngas_gcv_2: float = 15.0     # FSAG12 [%] median=14.96
+    ibh_valve: float = 0.2         # CSBHX [%] median=0.20 (정상 운전 시 거의 닫힘)
+    n2_flow: float = 29.0          # NQJ median=29.03
+    exhaust_temp: float = 627.9    # TTXM [°C] median=627.92
+    air_flow: float = 4500.0       # IGV 63%일 때 추정 공기유량 [kg/h, 가안] — 실측 태그 부재
 
 
 # ============================================================
@@ -38,15 +50,18 @@ class OperatingPoint:
 # ============================================================
 @dataclass(frozen=True)
 class InitialOutput:
-    """세션 시작 시 t=0 출력 초기값."""
+    """세션 시작 시 t=0 출력 초기값.
 
-    nox: float = 20.0          # [ppm, 가안]
-    co: float = 10.0           # [ppm, 가안]
-    exhaust_temp: float = 580.0  # [°C]
-    lambda_: float = 1.10      # [무차원]
-    efficiency: float = 0.89   # [무차원]
-    power: float = 248.6       # [MW, 가안]
-    nox_integrated: float = 20.0  # Zeldovich ODE 적분 초기값 [ppm]
+    학습 CSV(NOx_test_20250825.csv, DWATT>50MW 86401행) mean 적용.
+    `co`는 학습 타겟에서 제외(`REFACTOR_FLAME_TEMP_TO_EXHAUST_TEMP.md`).
+    """
+
+    nox: float = 29.0          # [ppm] mean=29.14 (AT_H1_901_PV)
+    exhaust_temp: float = 627.5  # [°C] mean=627.54 (TTXM)
+    lambda_: float = 1.93      # [무차원] O2 mean 10.07% → 20.9/(20.9-10.07)
+    efficiency: float = 0.397  # [무차원] LHV 식 mean=0.3968
+    power: float = 164.0       # [MW] mean=164.26 (DWATT)
+    nox_integrated: float = 29.0  # Zeldovich ODE 적분 초기값 [ppm]
 
 
 # ============================================================
@@ -55,17 +70,29 @@ class InitialOutput:
 # ============================================================
 @dataclass(frozen=True)
 class TimeConstants:
-    """변수별 1차 lag 시간상수. 단위: 초."""
+    """변수별 1차 lag 시간상수. 단위: 초.
 
-    # 입력(제어 변수) lag
+    기존 3개(fuel/n2/igv) + 신규 7개 제어 변수 — 신규 변수 τ는 가안 1.0초.
+    [조사 필요] 실제 운전 데이터 회귀로 갱신 예정.
+    """
+
+    # 입력(제어 변수) lag — 기존 3개
     fuel: float = 1.0    # 합성가스 유량 응답
     n2: float = 1.0      # 희석질소 응답
     igv: float = 2.0     # IGV 개도 응답 (기계적 액추에이터)
 
-    # 출력(연소 결과) lag
+    # 입력(제어 변수) lag — 신규 7개 [가안]
+    n2_valve_1: float = 1.0
+    syngas_srv: float = 1.0
+    syngas_gcv_1: float = 1.0
+    syngas_gcv_1a: float = 1.0
+    syngas_gcv_2: float = 1.0
+    ibh_valve: float = 1.0
+    n2_flow: float = 1.0
+
+    # 출력(연소 결과) lag — `co` 제거
     temp: float = 10.0   # 배기온도 — 열관성으로 가장 느림
     nox: float = 5.0     # NOx 응답
-    co: float = 3.0      # CO 응답
     power: float = 8.5   # 발전량 응답
 
 
@@ -75,13 +102,37 @@ class TimeConstants:
 # ============================================================
 @dataclass(frozen=True)
 class ThresholdConfig:
-    """임계치 및 경고 기준값."""
+    """임계치 및 경고 기준값.
 
-    nox_warning_ppm: float = 50.0     # NOx 경고 임계치 [ppm]
+    nox_warning_ppm은 시뮬 엔진 warning 발화 + 프론트 NOx 경고선 둘 다 기준이 된다.
+    그 외 운영 임계(효율/배기온/λ 운영 한계)는 [가안] — 도메인 전문가 검토 후 교체.
+    """
+
+    # 시뮬 엔진 내부 안전 클램프 — 운영자 화면과 무관, 변경 금지
     nox_ceiling_ppm: float = 1000.0   # Zeldovich ODE 물리적 상한 [ppm]
     nox_floor_ppm: float = 0.0        # NOx 음수 방지 floor [ppm]
     nox_rate_max_ppm_per_s: float = 50.0  # Zeldovich 생성률 폭주 방지 [ppm/s]
     lambda_min: float = 0.5           # 공기비 최소 클램프 (연료과잉 방지)
+
+    # 운영 임계 — 프론트 화면 표시용. 시뮬 동작에는 영향 없음.
+    nox_warning_ppm: float = 29.5     # NOx 경고 임계치 [ppm] — CSV 실측 mean+1.3σ≈p99
+
+    # 발전 효율 운영 임계 — GE 7F 단순 사이클 스펙 ~38.5%(LHV) 기준.
+    # 종전 가안(0.3633/0.3630)은 0.03%p 간격으로 센서 노이즈에 채터링 발생 → 도메인 검토 후 상향.
+    efficiency_caution: float = 0.370
+    efficiency_danger: float = 0.360
+
+    # 배기온도(TTXM) 상한 운영 임계 [°C] — GE 7FA 부분부하 시 IGV 제어로 ~650℃ 부근 유지.
+    # 종전 가안(633/638)은 정상 운전 최댓값(639.76℃)보다 낮아 오알람 위험 → 도메인 검토 후 상향.
+    exhaust_caution_c: float = 642.0
+    exhaust_danger_c: float = 650.0
+
+    # 공기비(λ) 운영 한계 [무차원] — 가스터빈 초희박 연소(2~4배 잉여 공기) 정상 대역.
+    # 종전 가안(0.8~1.4)은 연료과농 영역으로 가스터빈 운전 원리에 위배 → 도메인 검토 후 전면 재설정.
+    lambda_caution_lo: float = 2.0
+    lambda_caution_hi: float = 3.5
+    lambda_danger_lo: float = 1.5
+    lambda_danger_hi: float = 4.0
 
 
 # ============================================================
@@ -104,7 +155,9 @@ class FeatureConfig:
     """공기비·CO·효율 계산식 상수."""
 
     # compute_lambda
-    base_lambda: float = 1.10          # 기준 운전점에서의 λ [무차원]
+    # 정상 운전 학습 데이터 mean O2=10.07% 대입 시 λ = 20.9/(20.9-10.07) ≈ 1.93.
+    # 폴백 식이 O2 역산식과 정합되도록 base_lambda를 1.93으로 맞춘다.
+    base_lambda: float = 1.93          # 기준 운전점에서의 λ [무차원]
     n2_correction: float = 0.0005      # N2 1단위 증가당 λ 보정 계수
     n2_scale: float = 1000.0           # N2 몰분율 환산 스케일 (delta_n2 계산용)
 
@@ -116,6 +169,12 @@ class FeatureConfig:
     base_efficiency: float = 0.89      # 기준 발전 효율 [무차원]
     temp_sensitivity: float = 0.0001   # 온도 1°C 변동당 효율 변동 [1/°C]
     off_design_penalty: float = 0.02   # off-design 효율 페널티 계수
+    # 합성가스 평균 분자량 [g/mol] — LHV 실측 9170 kJ/m³를 만족하는 조성 역추정.
+    # 가정 조성: H₂ 34.4%, CO 43%, CO₂ 15%, N₂ 7.6% (IGCC 표준 H₂:CO≈0.8:1.0)
+    # LHV식 검증: 10.78×0.344 + 12.63×0.430 = 9.14 MJ/m³ ≈ 실측 9.17
+    # M = 0.344×2 + 0.430×28 + 0.150×44 + 0.076×28 = 21.4 g/mol
+    # 조성 변동(plant 안정 구간)으로 인한 효율 절대값 ±10% 오차 한계.
+    syngas_molar_mass: float = 21.4
 
     # compute_o2_fraction
     o2_in_air: float = 0.21            # 공기 중 O2 몰분율 [물리상수, 대기 조성]

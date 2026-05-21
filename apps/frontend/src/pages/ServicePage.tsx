@@ -1,32 +1,57 @@
-import { useCallback, useEffect, useState, type ChangeEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { useOutletContext } from 'react-router-dom'
+import { HmiSchematic } from '../features/dashboard/HmiSchematic/HmiSchematic'
 import {
-  NOX_LIMIT,
-  POWER_RAW_NAME,
+  CONTROL_VARIABLE_KEYS,
+  type ConsoleMetrics,
   type MetricPoint,
+  type RealtimeStreamPayload,
   type VariableConfigUpdate,
   type VariableKey,
   variableSeed,
 } from '../features/dashboard/mockConsole'
+import {
+  initialForecastStickyState,
+  stepForecastSticky,
+} from '../features/dashboard/forecastSticky'
 import { useConsoleState, type StreamStatus } from '../features/dashboard/useConsoleState'
+
+type RestartNotice = { tone: 'ok' | 'warn'; text: string }
+import { useThresholds, type Thresholds } from '../features/dashboard/useThresholds'
 import type { AppOutletContext } from '../app/App'
 
-const variableOrder: VariableKey[] = ['syngas', 'n2', 'load']
-const POWER_LIMIT = 240
+const controlVariableOrder: VariableKey[] = CONTROL_VARIABLE_KEYS
+// 정격값(rated) — `digital_twin/simulation/config.py`의 InitialOutput / FeatureConfig 기준.
+// 운영 임계(caution/danger)는 useThresholds로 백엔드에서 받아온다.
+const NOX_RATED = 20
+const EXHAUST_RATED = 580
+const LAMBDA_RATED = 1.1
+const EFFICIENCY_RATED = 0.89
 
 export function ServicePage() {
-  const { mode, settingsOpen, closeSettings, reportStreamStatus } = useOutletContext<AppOutletContext>()
+  const { mode, settingsOpen, closeSettings, reportStreamStatus, clock } = useOutletContext<AppOutletContext>()
   const {
     state,
     status,
     setActiveVar,
     stepActiveVar,
     resetControls,
-    toggleOverlay,
+    resetOverride,
+    setMode: notifyBackendMode,
     updateActiveVariableConfig,
     restoreActiveVariableDefaults,
+    restartSession,
   } = useConsoleState(mode)
+  const thresholds = useThresholds()
   const [draftConfig, setDraftConfig] = useState<VariableConfigUpdate | null>(null)
+  const [savedToast, setSavedToast] = useState(false)
+  const [restartBusy, setRestartBusy] = useState(false)
+  const [restartNotice, setRestartNotice] = useState<RestartNotice | null>(null)
+  const [restartPromptOpen, setRestartPromptOpen] = useState(false)
+  const [restartPassword, setRestartPassword] = useState('')
+  const [restartPromptError, setRestartPromptError] = useState<string | null>(null)
+  // realtime 모드는 Kafka 기반 5분 NOx 예측 표시 — 제어 조작은 잠근다.
+  const isRealtimeMode = mode === 'realtime'
 
   const activeVariable = state.variables[state.activeVar]
   const resolvedDraftConfig = draftConfig ?? {
@@ -34,33 +59,110 @@ export function ServicePage() {
     max: activeVariable.max,
     step: activeVariable.step,
   }
-  const displayedNox = mode === 'sim' ? state.metrics.nox : state.metrics.predictedNox
+  // 메인 KPI/도면/임계 여유는 15% O2 보정 NOx(nox15pct). 5분 후 예측값(predictedNox)은 ForecastCard에서만 사용.
+  const displayedNox = state.metrics.nox15pct
+  const forecastTargetKst = isRealtimeMode && state.forecast
+    ? formatForecastTargetKst(state.forecast.target_time)
+    : null
   const streamLabel = streamStatusLabel(status)
-  const noxStatus = displayedNox > NOX_LIMIT ? '위험' : streamLabel.text
-  const controlCards = variableOrder.map((key) => state.variables[key])
-  const noxValues = state.history.length > 0 ? state.history.map((point) => point.nox) : [displayedNox]
-  const powerValues = state.history.length > 0 ? state.history.map((point) => point.power) : [state.metrics.power]
-  const noxHeadroom = NOX_LIMIT - displayedNox
-  const powerHeadroom = state.metrics.power - POWER_LIMIT
-  const noxHeadroomTone = headroomTone(noxHeadroom, 12, 5)
-  const powerHeadroomTone = headroomTone(powerHeadroom, 12, 5)
+  const noxStatus = displayedNox > thresholds.noxLimit ? '위험' : '정상'
+  const controlCards = controlVariableOrder.map((key) => state.variables[key])
+  const noxValues = state.history.length > 0 ? state.history.map((point) => point.nox15pct) : [displayedNox]
+  // 효율은 정격 이상이면 항상 정상. 미만일 때만 caution/danger 임계로 색 판정.
+  const efficiency = state.metrics.efficiency
+  const noxHeadroom = thresholds.noxLimit - displayedNox
+  const noxHeadroomTone = headroomTone(noxHeadroom)
+  const efficiencyHeadroomTone = efficiencyTone(efficiency, thresholds)
   const noxRange = getRange(noxValues)
-  const powerRange = getRange(powerValues)
-  const tableRows = [
-    ['NOx', displayedNox.toFixed(1), 'ppm', NOX_LIMIT.toFixed(1), '5.0s', displayedNox > NOX_LIMIT ? '위험' : '정상'],
-    ['발전량', state.metrics.power.toFixed(1), 'MW', '248.6', '8.5s', state.metrics.power < 240 ? '주의' : '정상'],
-    ['일산화탄소 (CO)', state.metrics.co.toFixed(1), 'ppm', '200.0', '1.8s', '정상'],
-    ['배기온도', state.metrics.exhaust.toFixed(1), '°C', '580.0', '10.0s', state.metrics.exhaust > 600 ? '주의' : '정상'],
-    ['공기비 (λ)', state.metrics.lambda.toFixed(2), '-', '1.10', '0.9s', '정상'],
-  ]
+  const tableRows = buildOutputTableRows({
+    displayedNox,
+    metrics: state.metrics,
+    history: state.history,
+    thresholds,
+  })
   const handleCloseSettings = useCallback(() => {
     setDraftConfig(null)
+    setSavedToast(false)
     closeSettings()
   }, [closeSettings])
+
+  // 사이드바 버튼 → 비밀번호 모달 오픈
+  const handleOpenRestartPrompt = useCallback(() => {
+    if (restartBusy) return
+    setRestartPassword('')
+    setRestartPromptError(null)
+    setRestartNotice(null)
+    setRestartPromptOpen(true)
+  }, [restartBusy])
+
+  // 모달 닫기 — 입력값/에러 즉시 폐기 (메모리에도 비밀번호를 남기지 않는다)
+  const handleCloseRestartPrompt = useCallback(() => {
+    setRestartPromptOpen(false)
+    setRestartPassword('')
+    setRestartPromptError(null)
+  }, [])
+
+  // 모달 제출 — 비어 있으면 즉시 거절, 200/401/503 분기 처리
+  const handleSubmitRestart = useCallback(async () => {
+    if (restartBusy) return
+    const password = restartPassword
+    if (!password) {
+      setRestartPromptError('비밀번호를 입력하세요.')
+      return
+    }
+    setRestartBusy(true)
+    setRestartPromptError(null)
+    const outcome = await restartSession(password)
+    setRestartBusy(false)
+
+    if (outcome.kind === 'ok') {
+      handleCloseRestartPrompt()
+      setRestartNotice({ tone: 'ok', text: '서버 재시작 완료 — 새 세션이 연결되었습니다.' })
+      return
+    }
+    if (outcome.kind === 'invalid-password') {
+      // 모달 유지 + 입력란 비우기 + 에러 표시
+      setRestartPassword('')
+      setRestartPromptError(outcome.message)
+      return
+    }
+    // unavailable / error: 모달 닫고 사이드바 토스트로
+    handleCloseRestartPrompt()
+    setRestartNotice({ tone: 'warn', text: outcome.message })
+  }, [restartBusy, restartPassword, restartSession, handleCloseRestartPrompt])
+
+  // restart 결과 알림은 3초 후 자동 소거
+  useEffect(() => {
+    if (!restartNotice) return
+    const timer = window.setTimeout(() => setRestartNotice(null), 3000)
+    return () => window.clearTimeout(timer)
+  }, [restartNotice])
+
+  // 모달 ESC 닫기
+  useEffect(() => {
+    if (!restartPromptOpen) return
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !restartBusy) handleCloseRestartPrompt()
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [restartPromptOpen, restartBusy, handleCloseRestartPrompt])
+
+  // 적용 클릭 시 1.5초간 "저장 완료" 토스트 노출
+  useEffect(() => {
+    if (!savedToast) return
+    const timer = window.setTimeout(() => setSavedToast(false), 1500)
+    return () => window.clearTimeout(timer)
+  }, [savedToast])
 
   useEffect(() => {
     reportStreamStatus(status)
   }, [reportStreamStatus, status])
+
+  // App.tsx의 mode 토글이 변경되면 backend에 알린다 — 첫 마운트 sim 호출은 idempotent.
+  useEffect(() => {
+    notifyBackendMode(mode)
+  }, [mode, notifyBackendMode])
 
   useEffect(() => {
     if (!settingsOpen) return
@@ -82,27 +184,43 @@ export function ServicePage() {
               title="NOx"
               value={displayedNox}
               unit="ppm"
-              subtitle={`허용치 ${NOX_LIMIT} ppm`}
               status={noxStatus}
               emphatic
             />
             <KpiCard
-              title="발전량"
-              value={state.metrics.power}
-              unit="MW"
-              subtitle={POWER_RAW_NAME}
-              status="정상"
+              title="배기온도"
+              value={state.metrics.exhaust}
+              unit="°C"
+              status={exhaustStatus(state.metrics.exhaust, thresholds)}
+              digits={1}
               emphatic
             />
+            <KpiCard
+              title="발전 효율"
+              value={efficiency * 100}
+              unit="%"
+              status={efficiencyKpiStatus(efficiency, thresholds)}
+              digits={1}
+              emphatic
+            />
+            <KpiCard
+              title="공기비"
+              value={state.metrics.lambda}
+              unit=""
+              status={lambdaStatus(state.metrics.lambda, thresholds)}
+              digits={2}
+              emphatic
+            />
+          </div>
+
+          <div className="kpi-row kpi-row-secondary">
             {controlCards.map((variable) => (
-              <KpiCard
+              <KpiCardMini
                 key={variable.key}
                 title={variable.label}
                 value={variable.value}
                 unit={variable.unit}
-                status="제어"
                 digits={variable.digits}
-                subtitle={variable.rawName}
               />
             ))}
           </div>
@@ -112,61 +230,31 @@ export function ServicePage() {
               <div className="panel-header-left">
                 <span className="panel-title">공정 모니터링</span>
               </div>
-              <button
-                type="button"
-                className={state.overlayVisible ? 'overlay-toggle' : 'overlay-toggle off'}
-                onClick={toggleOverlay}
-              >
-                <EyeIcon />
-                오버레이 표시
-              </button>
             </header>
-            <div className="plant-body">
-              <div className="plant-frame" />
-              <div className="plant-hint mono">도면 이미지 자리 (plant-diagram.svg)</div>
-              <PlantDiagram n2Label={state.variables.n2.shortLabel} />
-              {state.overlayVisible ? (
-                <div className="overlay-layer">
-                  <div className="overlay-anchor top-left">
-                    <OverlayMetric
-                      label={state.variables.syngas.shortLabel}
-                      value={`${formatValue(state.variables.syngas.value, state.variables.syngas.digits)} ${state.variables.syngas.unit}`}
-                    />
-                  </div>
-                  <div className="overlay-anchor top-mid">
-                    <OverlayMetric label="공기비 (λ)" value={state.metrics.lambda.toFixed(2)} />
-                  </div>
-                  <div className="overlay-anchor top-right-left">
-                    <OverlayMetric label="배기온도" value={`${state.metrics.exhaust.toFixed(1)} °C`} caution />
-                  </div>
-                  <div className="overlay-anchor top-right">
-                    <OverlayMetric label="일산화탄소 (CO)" value={`${state.metrics.co.toFixed(1)} ppm`} />
-                  </div>
-                  <div className="overlay-anchor right-mid">
-                    <OverlayMetric label="NOx" value={`${displayedNox.toFixed(1)} ppm`} primary />
-                  </div>
-                  <div className="overlay-anchor bottom-left">
-                    <OverlayMetric
-                      label={state.variables.n2.shortLabel}
-                      value={`${formatValue(state.variables.n2.value, state.variables.n2.digits)} ${state.variables.n2.unit}`}
-                    />
-                  </div>
-                  <div className="overlay-anchor bottom-mid-left">
-                    <OverlayMetric
-                      label={state.variables.load.shortLabel}
-                      value={`${formatValue(state.variables.load.value, state.variables.load.digits)} ${state.variables.load.unit}`}
-                    />
-                  </div>
-                  <div className="overlay-anchor bottom-mid-right">
-                    <OverlayMetric label="발전량" value={`${state.metrics.power.toFixed(1)} MW`} />
-                  </div>
-                </div>
-              ) : null}
+            <div className="plant-body" style={{ height: 500 }}>
+              <HmiSchematic
+                {...state.variables}
+                nox={displayedNox}
+                ttxm={state.metrics.exhaust}
+                lambda={state.metrics.lambda}
+                power={state.metrics.power}
+                history={state.history}
+                kpiThresholds={{
+                  noxWarn: 25,
+                  noxCrit: thresholds.noxLimit,
+                  ttxmWarn: thresholds.exhaustCautionC,
+                  ttxmCrit: thresholds.exhaustDangerC,
+                  lambdaWarnLo: thresholds.lambdaCautionLo,
+                  lambdaWarnHi: thresholds.lambdaCautionHi,
+                  lambdaCritLo: thresholds.lambdaDangerLo,
+                  lambdaCritHi: thresholds.lambdaDangerHi,
+                }}
+              />
             </div>
           </section>
 
           <div className="chart-row">
-            <section className="panel chart-card nox-glow">
+            <section className="panel chart-card">
               <header className="chart-header">
                 <div>
                   <div className="chart-title">NOx 시계열</div>
@@ -175,20 +263,19 @@ export function ServicePage() {
                 <span className={`stream-badge ${streamLabel.tone}`}>{streamLabel.text}</span>
               </header>
               <div className="chart-body">
-                <NoxChart history={state.history} current={displayedNox} />
+                <NoxChart history={state.history} current={displayedNox} noxLimit={thresholds.noxLimit} />
               </div>
             </section>
 
             <section className="panel chart-card">
               <header className="chart-header">
                 <div>
-                  <div className="chart-title">일산화탄소 (CO) / 공기비 (λ) / 배기온도</div>
+                  <div className="chart-title">배기온도 / 공기비</div>
                   <div className="chart-subtitle">정규화 · 최근 60s</div>
                 </div>
                 <div className="chart-legend mono">
-                  <span className="legend-co">일산화탄소</span>
-                  <span className="legend-lambda">공기비</span>
                   <span className="legend-exhaust">배기온도</span>
+                  <span className="legend-lambda">공기비</span>
                 </div>
               </header>
               <div className="chart-body">
@@ -203,22 +290,28 @@ export function ServicePage() {
                 <tr>
                   <th>변수명</th>
                   <th>현재값</th>
-                  <th>단위</th>
-                  <th>타겟값</th>
-                  <th>시간상수 τ</th>
+                  <th>기준치</th>
+                  <th>편차</th>
+                  <th>최근 60s 변동폭</th>
                   <th>상태</th>
                 </tr>
               </thead>
               <tbody>
-                {tableRows.map(([name, value, unit, target, tau, status]) => (
-                  <tr key={name}>
-                    <td className="label-cell">{name}</td>
-                    <td>{value}</td>
-                    <td className="muted-cell">{unit}</td>
-                    <td className="muted-cell">{target}</td>
-                    <td className="muted-cell">{tau}</td>
+                {tableRows.map((row) => (
+                  <tr key={row.name}>
+                    <td className="label-cell">{row.name}</td>
                     <td>
-                      <span className={statusClass(status)}>{status}</span>
+                      {row.currentText}
+                      <span className="cell-unit">{row.unit}</span>
+                    </td>
+                    <td className="muted-cell">
+                      {row.ratedText}
+                      <span className="cell-unit">{row.unit}</span>
+                    </td>
+                    <td className={`deviation-cell ${row.deviationTone}`}>{row.deviationText}</td>
+                    <td className="muted-cell">{row.rangeText}</td>
+                    <td>
+                      <span className={statusClass(row.status)}>{row.status}</span>
                     </td>
                   </tr>
                 ))}
@@ -228,78 +321,102 @@ export function ServicePage() {
         </div>
 
         <aside className="sidebar">
-          <div className="sidebar-section">
-            <div className="sidebar-title">제어 변수 선택</div>
-            <div className="chip-row">
-              {variableOrder.map((key) => (
-                <button
-                  key={key}
-                  type="button"
-                  className={state.activeVar === key ? 'chip active' : 'chip'}
-                  onClick={() => setActiveVar(key)}
-                >
-                  {state.variables[key].shortLabel}
-                </button>
-              ))}
+          <div className="sidebar-clock-wrap">
+            <div className="sidebar-clock-stack">
+              <div className="sidebar-clock mono">{clock}</div>
             </div>
           </div>
+          {isRealtimeMode ? (
+            <ForecastCard
+              forecast={state.forecast}
+              warning={state.warning}
+              tick={state.tick}
+              noxLimit={thresholds.noxLimit}
+              currentNox={state.metrics.nox15pct}
+              forecastTargetKst={forecastTargetKst}
+            />
+          ) : (
+            <>
+              <div className="sidebar-section">
+                <div className="sidebar-title">제어 변수 선택</div>
+                <select
+                  className="control-select mono"
+                  value={state.activeVar}
+                  onChange={(event) => setActiveVar(event.target.value as VariableKey)}
+                >
+                  {controlVariableOrder.map((key) => (
+                    <option key={key} value={key}>
+                      {state.variables[key].label}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-          <div className="sidebar-section">
-            <div className="sidebar-title">조작 패널</div>
-            <div className="control-box">
-              <div className="control-label">현재 조작 중:</div>
-              <div className="control-name">{activeVariable.label}</div>
-              <div className="control-meta mono">{activeVariable.rawName}</div>
-              <div className="control-value mono">
-                {formatValue(activeVariable.value, activeVariable.digits)}
-                <span className="control-unit">{activeVariable.unit}</span>
+              <div className="sidebar-section">
+                <div className="sidebar-title">조작 패널</div>
+                <div className="control-box">
+                  <div className="control-label">현재 조작 중:</div>
+                  <div className="control-name">{activeVariable.label}</div>
+                  <div className="control-value mono">
+                    {formatValue(activeVariable.value, activeVariable.digits)}
+                    <span className="control-unit">{activeVariable.unit}</span>
+                  </div>
+                  <div className="control-base mono">
+                    기준치 {formatValue(activeVariable.base, activeVariable.digits)} {activeVariable.unit}
+                  </div>
+                </div>
+                <div className="stepper-row">
+                  <div className="stepper">
+                    <button
+                      type="button"
+                      className="step-button"
+                      onClick={() => stepActiveVar(-1)}
+                      disabled={activeVariable.value <= activeVariable.min}
+                      aria-label="감소"
+                    >
+                      <ArrowDownIcon />
+                    </button>
+                    <div className="step-mid mono">±{formatValue(activeVariable.step, activeVariable.digits)}</div>
+                    <button
+                      type="button"
+                      className="step-button"
+                      onClick={() => stepActiveVar(1)}
+                      disabled={activeVariable.value >= activeVariable.max}
+                      aria-label="증가"
+                    >
+                      <ArrowUpIcon />
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    onClick={() => {
+                      resetOverride()
+                      resetControls()
+                    }}
+                    aria-label="초기화"
+                  >
+                    <ResetIcon />
+                  </button>
+                </div>
               </div>
-              <div className="control-base mono">
-                기준치 {formatValue(activeVariable.base, activeVariable.digits)} {activeVariable.unit}
-              </div>
-            </div>
-            <div className="stepper-row">
-              <div className="stepper">
-                <button
-                  type="button"
-                  className="step-button"
-                  onClick={() => stepActiveVar(-1)}
-                  disabled={activeVariable.value <= activeVariable.min}
-                  aria-label="감소"
-                >
-                  <ArrowDownIcon />
-                </button>
-                <div className="step-mid mono">±{formatValue(activeVariable.step, activeVariable.digits)}</div>
-                <button
-                  type="button"
-                  className="step-button"
-                  onClick={() => stepActiveVar(1)}
-                  disabled={activeVariable.value >= activeVariable.max}
-                  aria-label="증가"
-                >
-                  <ArrowUpIcon />
-                </button>
-              </div>
-              <button type="button" className="icon-button" onClick={resetControls} aria-label="초기화">
-                <ResetIcon />
-              </button>
-            </div>
-          </div>
+            </>
+          )}
 
           <div className="sidebar-section telemetry">
             <div className="sidebar-title">운영 요약</div>
             <div className="summary-highlight">
               <div className="summary-label">NOx 임계 여유</div>
               <div className={`summary-value ${noxHeadroomTone}`}>
-                {noxHeadroom >= 0 ? `+${noxHeadroom.toFixed(1)}` : `${noxHeadroom.toFixed(1)}`}
+                {formatHeadroom(noxHeadroom, 1)}
                 <span className="summary-unit">ppm</span>
               </div>
             </div>
             <div className="summary-highlight">
-              <div className="summary-label">발전량 임계 여유</div>
-              <div className={`summary-value ${powerHeadroomTone}`}>
-                {powerHeadroom >= 0 ? `+${powerHeadroom.toFixed(1)}` : `${powerHeadroom.toFixed(1)}`}
-                <span className="summary-unit">MW</span>
+              <div className="summary-label">발전 효율 임계 여유</div>
+              <div className={`summary-value ${efficiencyHeadroomTone}`}>
+                {formatEfficiencyHeadroom(efficiency, thresholds)}
+                <span className="summary-unit">%p</span>
               </div>
             </div>
             <div className="telemetry-divider" />
@@ -313,14 +430,39 @@ export function ServicePage() {
                 unit="ppm"
               />
               <SummaryRangeMetric
-                label="최근 60초 발전량"
-                minLabel="최솟값"
-                minValue={powerRange.min.toFixed(1)}
-                maxLabel="최댓값"
-                maxValue={powerRange.max.toFixed(1)}
-                unit="MW"
+                label="현재 발전 효율"
+                minLabel="현재"
+                minValue={(efficiency * 100).toFixed(1)}
+                maxLabel="정격"
+                maxValue={(EFFICIENCY_RATED * 100).toFixed(1)}
+                unit="%"
               />
             </div>
+          </div>
+          <div className="sidebar-restart-wrap">
+            <button
+              type="button"
+              className={`sidebar-restart-card${restartBusy ? ' is-busy' : ''}`}
+              onClick={handleOpenRestartPrompt}
+              disabled={restartBusy}
+              aria-busy={restartBusy}
+            >
+              <span className="sidebar-restart-icon" aria-hidden="true">
+                <ServerRestartIcon />
+              </span>
+              <span className="sidebar-restart-text">
+                {restartBusy ? '서버 재시작 중…' : '서버 초기화'}
+              </span>
+            </button>
+            {restartNotice ? (
+              <div
+                className={`sidebar-restart-notice ${restartNotice.tone}`}
+                role="status"
+                aria-live="polite"
+              >
+                {restartNotice.text}
+              </div>
+            ) : null}
           </div>
         </aside>
       </section>
@@ -339,7 +481,6 @@ export function ServicePage() {
                 <div id="settings-modal-title" className="settings-modal-title">
                   {activeVariable.label} 조작 가드레일
                 </div>
-                <div className="settings-modal-subtitle mono">{activeVariable.rawName}</div>
                 <div className="settings-modal-hint">
                   이 콘솔의 ▲▼ 조작 범위만 좁힙니다. 운영 한계({variableSeed[activeVariable.key].min}~{variableSeed[activeVariable.key].max} {activeVariable.unit}) 자체는 변경되지 않습니다.
                 </div>
@@ -353,7 +494,7 @@ export function ServicePage() {
               <div className="settings-variable-picker">
                 <div className="settings-field-label">입력 변수 선택</div>
                 <div className="settings-chip-row">
-                  {variableOrder.map((key) => (
+                  {controlVariableOrder.map((key) => (
                     <button
                       key={`settings-${key}`}
                       type="button"
@@ -363,7 +504,7 @@ export function ServicePage() {
                         setDraftConfig(null)
                       }}
                     >
-                      {state.variables[key].shortLabel}
+                      {state.variables[key].label}
                     </button>
                   ))}
                 </div>
@@ -378,6 +519,11 @@ export function ServicePage() {
                 onChange={(value) =>
                   setDraftConfig((current) => ({ ...(current ?? resolvedDraftConfig), max: value }))
                 }
+                quickPicks={buildPercentPicks(
+                  variableSeed[activeVariable.key].min,
+                  variableSeed[activeVariable.key].max,
+                  activeVariable.digits,
+                )}
               />
               <SettingField
                 label="하한"
@@ -389,6 +535,11 @@ export function ServicePage() {
                 onChange={(value) =>
                   setDraftConfig((current) => ({ ...(current ?? resolvedDraftConfig), min: value }))
                 }
+                quickPicks={buildPercentPicks(
+                  variableSeed[activeVariable.key].min,
+                  variableSeed[activeVariable.key].max,
+                  activeVariable.digits,
+                )}
               />
               <SettingField
                 label="step"
@@ -398,10 +549,14 @@ export function ServicePage() {
                 onChange={(value) =>
                   setDraftConfig((current) => ({ ...(current ?? resolvedDraftConfig), step: value }))
                 }
+                quickPicks={STEP_QUICK_PICKS}
               />
             </div>
 
             <div className="settings-modal-actions">
+              <div className="settings-modal-toast" aria-live="polite">
+                {savedToast ? <span className="settings-toast-text">저장 완료</span> : null}
+              </div>
               <button
                 type="button"
                 className="button-secondary"
@@ -413,6 +568,7 @@ export function ServicePage() {
                     max: defaults.max,
                     step: defaults.step,
                   })
+                  setSavedToast(true)
                 }}
               >
                 기본값 복원
@@ -422,7 +578,7 @@ export function ServicePage() {
                 className="button-primary"
                 onClick={() => {
                   updateActiveVariableConfig(draftConfig ?? resolvedDraftConfig)
-                  handleCloseSettings()
+                  setSavedToast(true)
                 }}
               >
                 적용
@@ -431,8 +587,199 @@ export function ServicePage() {
           </section>
         </div>
       ) : null}
+
+      {restartPromptOpen ? (
+        <div
+          className="modal-backdrop"
+          onClick={() => {
+            if (!restartBusy) handleCloseRestartPrompt()
+          }}
+        >
+          <section
+            className="restart-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="restart-modal-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="restart-modal-header">
+              <div id="restart-modal-title" className="restart-modal-title">
+                서버 초기화 확인
+              </div>
+              <div className="restart-modal-hint">
+                계속하려면 관리자 비밀번호를 입력하세요.<br />
+                백엔드와 producer 컨테이너가 재시작됩니다.
+              </div>
+            </div>
+            <form
+              className="restart-modal-form"
+              onSubmit={(event) => {
+                event.preventDefault()
+                void handleSubmitRestart()
+              }}
+            >
+              <label className="restart-modal-label" htmlFor="restart-password">
+                비밀번호
+              </label>
+              <input
+                id="restart-password"
+                type="password"
+                className="restart-modal-input mono"
+                value={restartPassword}
+                autoComplete="off"
+                autoFocus
+                disabled={restartBusy}
+                onChange={(event) => {
+                  setRestartPassword(event.target.value)
+                  if (restartPromptError) setRestartPromptError(null)
+                }}
+              />
+              {restartPromptError ? (
+                <div className="restart-modal-error" role="alert">
+                  {restartPromptError}
+                </div>
+              ) : null}
+              <div className="restart-modal-actions">
+                <button
+                  type="button"
+                  className="button-secondary"
+                  onClick={handleCloseRestartPrompt}
+                  disabled={restartBusy}
+                >
+                  취소
+                </button>
+                <button
+                  type="submit"
+                  className="button-primary restart-modal-submit"
+                  disabled={restartBusy}
+                >
+                  {restartBusy ? '재시작 중…' : '재시작'}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      ) : null}
     </main>
   )
+}
+
+// 테스트에서 sticky 디바운스 동작을 컴포넌트 레벨로 검증하기 위해 export.
+export function ForecastCard({
+  forecast,
+  warning,
+  tick,
+  noxLimit,
+  currentNox,
+  forecastTargetKst,
+}: {
+  forecast: RealtimeStreamPayload['forecast']
+  warning: RealtimeStreamPayload['warning']
+  // 단조 증가 tick (WS payload 1개당 +1). payload 객체 동일성 대신 tick
+  // 변화로 "새 payload 도착"을 감지한다. 이 카드가 처음 본 tick을 기준으로
+  // 경과 tick 수(≈초)를 계산해 warmup gate 판정에 쓴다.
+  tick: number
+  noxLimit: number
+  currentNox: number
+  // 5분 후 예측 대상 시각(KST 포맷). forecast 미수신 시 null.
+  forecastTargetKst: string | null
+}) {
+  // warmup gate + latch — 새로고침/세션 재연결 직후 FORECAST_WARMUP_TICKS회
+  // (1Hz 기준 약 10초)는 forecast가 와도 의도적으로 "준비 중"을 표시한다.
+  // 이 구간에 세션 재생성·sticky 전이로 "값 ↔ 준비 중"이 깜빡이는 것을
+  // 통째로 흡수한다. 게이트 종료 후 ready 값이 한 번 latch되면 not-ready/
+  // warning이 와도 그 값을 영구 hold해 다시 "준비 중"으로 돌아가지 않는다.
+  //
+  // tick이 바뀐 렌더에서만 step을 1회 적용하는 React 공식 derived-state
+  // 패턴. lastReady와 표시값(effective)을 함께 state로 확정 보관해, setSticky
+  // 후 재렌더나 같은 tick의 부수 재렌더에서 중복 적용되지 않게 한다(멱등).
+  const [sticky, setSticky] = useState(initialForecastStickyState)
+  const [seenTick, setSeenTick] = useState(-1)
+  const [effectiveForecast, setEffectiveForecast] =
+    useState<RealtimeStreamPayload['forecast']>(null)
+  // 이 카드 인스턴스가 처음 본 tick. tickRef는 세션 재생성 시에도 리셋되지
+  // 않으므로, 마운트 기준 상대 경과로 게이트를 건다.
+  const baseTickRef = useRef<number | null>(null)
+  if (baseTickRef.current === null) baseTickRef.current = tick
+
+  if (tick !== seenTick) {
+    const elapsedTicks = tick - baseTickRef.current
+    const step = stepForecastSticky(sticky, forecast, warning, elapsedTicks)
+    setSeenTick(tick)
+    if (step.next !== sticky) setSticky(step.next)
+    if (step.effective !== effectiveForecast) {
+      setEffectiveForecast(step.effective)
+    }
+  }
+
+  if (effectiveForecast === null) {
+    return (
+      <section className="kpi-card kpi-card-primary forecast-card">
+        <div className="kpi-header">
+          <div className="kpi-name">5분 후 NOx 예측</div>
+        </div>
+        <div className="kpi-value-row">
+          <div className="kpi-value">--</div>
+        </div>
+        <div className="kpi-subtitle forecast-warmup-text">예측 모델 준비 중...</div>
+      </section>
+    )
+  }
+
+  const exceeded = effectiveForecast.threshold_exceeded
+  // 화면 표시·delta 비교는 15% O2 보정값(predicted_nox_15pct). backend 구버전 호환을 위해
+  // 미전송 시 raw predicted_nox로 폴백. threshold_exceeded는 backend raw 기준 유지.
+  const displayedForecast =
+    effectiveForecast.predicted_nox_15pct ?? effectiveForecast.predicted_nox
+  const [integer, decimal = '0'] = displayedForecast.toFixed(1).split('.')
+
+  return (
+    <section
+      className={
+        exceeded
+          ? 'kpi-card kpi-card-primary caution-border forecast-card'
+          : 'kpi-card kpi-card-primary forecast-card'
+      }
+    >
+      <div className="kpi-header">
+        <div className="kpi-name">5분 후 NOx 예측</div>
+      </div>
+      {forecastTargetKst ? (
+        <div className="forecast-target-time mono">
+          <span className="sidebar-clock-icon" aria-label="5분 후 예측 시각" title="5분 후 예측 시각">
+            <ForecastClockIcon />
+          </span>
+          <span>{forecastTargetKst}</span>
+        </div>
+      ) : null}
+      <div className="kpi-value-row">
+        <div className={exceeded ? 'kpi-value kpi-value-large caution-text' : 'kpi-value kpi-value-large'}>
+          {integer}
+          <span className="kpi-decimal">.{decimal}</span>
+        </div>
+        <div className="kpi-subtitle">ppm</div>
+      </div>
+      {exceeded ? (
+        <div className="forecast-warning mono">
+          ⚠ 임계 초과 (허용 {noxLimit.toFixed(1)} ppm)
+        </div>
+      ) : (
+        <div className="forecast-headroom mono">
+          {formatForecastDelta(displayedForecast, currentNox)}
+        </div>
+      )}
+    </section>
+  )
+}
+
+// 현재 NOx 대비 5분 후 예측의 증감 — "현재 대비 +2.3 ppm" / "-1.5 ppm".
+function formatForecastDelta(predicted: number, current: number): string {
+  if (!Number.isFinite(predicted) || !Number.isFinite(current)) return '현재 대비 -- ppm'
+  const delta = predicted - current
+  const abs = Math.abs(delta).toFixed(1)
+  if (Number(abs) === 0) return `현재 대비 0.0 ppm`
+  const sign = delta > 0 ? '+' : '-'
+  return `현재 대비 ${sign}${abs} ppm`
 }
 
 function SettingField({
@@ -443,6 +790,7 @@ function SettingField({
   min,
   max,
   onChange,
+  quickPicks,
 }: {
   label: string
   unit: string
@@ -451,6 +799,7 @@ function SettingField({
   min?: number
   max?: number
   onChange: (value: number) => void
+  quickPicks?: ReadonlyArray<{ label: string; value: number }>
 }) {
   return (
     <label className="settings-field">
@@ -467,8 +816,54 @@ function SettingField({
         />
         <span className="settings-field-unit">{unit}</span>
       </div>
+      {quickPicks && quickPicks.length > 0 ? (
+        <div className="settings-quick-row" role="group" aria-label={`${label} 빠른 선택`}>
+          {quickPicks.map((pick) => {
+            const active = approxEqual(pick.value, value, digits)
+            return (
+              <button
+                key={`${label}-${pick.label}`}
+                type="button"
+                className={active ? 'settings-quick-pick active' : 'settings-quick-pick'}
+                onClick={() => onChange(pick.value)}
+                aria-pressed={active}
+              >
+                {pick.label}
+              </button>
+            )
+          })}
+        </div>
+      ) : null}
     </label>
   )
+}
+
+function approxEqual(a: number, b: number, digits: number): boolean {
+  const eps = Math.pow(10, -Math.max(digits, 0)) / 2
+  return Math.abs(a - b) <= eps
+}
+
+const STEP_QUICK_PICKS: ReadonlyArray<{ label: string; value: number }> = [
+  { label: '0.1', value: 0.1 },
+  { label: '0.5', value: 0.5 },
+  { label: '1', value: 1 },
+  { label: '5', value: 5 },
+  { label: '10', value: 10 },
+]
+
+// 운영 한계 min~max를 0/25/50/75/100%로 분할 — digits에 맞춰 반올림
+function buildPercentPicks(
+  min: number,
+  max: number,
+  digits: number,
+): ReadonlyArray<{ label: string; value: number }> {
+  const span = max - min
+  const factor = Math.pow(10, Math.max(digits, 0))
+  const round = (n: number) => Math.round(n * factor) / factor
+  return [0, 0.25, 0.5, 0.75, 1].map((ratio) => ({
+    label: `${Math.round(ratio * 100)}%`,
+    value: round(min + span * ratio),
+  }))
 }
 
 function KpiCard({
@@ -476,16 +871,14 @@ function KpiCard({
   value,
   unit,
   status,
-  subtitle,
   emphatic,
   caution,
   digits = 1,
 }: {
   title: string
   value: number
-  unit: string
+  unit?: string
   status: string
-  subtitle?: string
   emphatic?: boolean
   caution?: boolean
   digits?: number
@@ -503,7 +896,37 @@ function KpiCard({
           {integer}
           <span className="kpi-decimal">.{decimal}</span>
         </div>
-        <div className="kpi-subtitle">{subtitle ?? unit}</div>
+        {unit ? <div className="kpi-unit">{unit}</div> : null}
+      </div>
+    </section>
+  )
+}
+
+function KpiCardMini({
+  title,
+  value,
+  unit,
+  digits = 1,
+}: {
+  title: string
+  value: number
+  unit: string
+  digits?: number
+}) {
+  const [integer, decimal = '0'] = value.toFixed(digits).split('.')
+
+  return (
+    <section className="kpi-card kpi-card-mini">
+      <div className="kpi-mini-header">
+        <div className="kpi-mini-name">{title}</div>
+        <span className={statusClass('제어')}>제어</span>
+      </div>
+      <div className="kpi-mini-value-row">
+        <div className="kpi-mini-value">
+          {integer}
+          <span className="kpi-mini-decimal">.{decimal}</span>
+        </div>
+        <div className="kpi-mini-unit">{unit}</div>
       </div>
     </section>
   )
@@ -545,7 +968,15 @@ function SummaryRangeMetric({
   )
 }
 
-function NoxChart({ history, current }: { history: MetricPoint[]; current: number }) {
+function NoxChart({
+  history,
+  current,
+  noxLimit,
+}: {
+  history: MetricPoint[]
+  current: number
+  noxLimit: number
+}) {
   const width = 560
   const height = 170
   const bottomLabelY = height - 12
@@ -553,14 +984,14 @@ function NoxChart({ history, current }: { history: MetricPoint[]; current: numbe
   if (history.length < 2) {
     return <ChartPlaceholder width={width} height={height} />
   }
-  const values = history.map((point) => point.nox)
+  const values = history.map((point) => point.nox15pct)
   const focusedRange = createRange(values, 0.28, 1.2)
   const max = focusedRange.max
   const min = focusedRange.min
-  const thresholdInRange = NOX_LIMIT <= max
+  const thresholdInRange = noxLimit <= max
   const line = buildLinePath(values, min, max, width, height)
   const area = `${line} L ${width} ${height} L 0 ${height} Z`
-  const thresholdY = thresholdInRange ? scaleY(NOX_LIMIT, min, max, height) : thresholdPinnedY
+  const thresholdY = thresholdInRange ? scaleY(noxLimit, min, max, height) : thresholdPinnedY
   const currentY = scaleY(current, min, max, height)
 
   return (
@@ -582,7 +1013,7 @@ function NoxChart({ history, current }: { history: MetricPoint[]; current: numbe
         strokeWidth="1"
       />
       <text x="8" y={thresholdY - 6} className="svg-label svg-alert">
-        {NOX_LIMIT} ppm
+        {noxLimit} ppm
       </text>
       <path d={area} fill="url(#noxArea)" />
       <path d={line} fill="none" stroke="#3B82F6" strokeWidth="2" strokeLinecap="round" />
@@ -610,10 +1041,8 @@ function MultiChart({ history }: { history: MetricPoint[] }) {
   if (history.length < 2) {
     return <ChartPlaceholder width={width} height={height} />
   }
-  const coValues = history.map((point) => point.co)
   const lambdaValues = history.map((point) => point.lambda)
   const exhaustValues = history.map((point) => point.exhaust)
-  const coRange = createRange(coValues, 0.12, 0.6)
   const lambdaRange = createRange(lambdaValues, 0.18, 0.02)
   const exhaustRange = createRange(exhaustValues, 0.08, 1.2)
 
@@ -635,13 +1064,6 @@ function MultiChart({ history }: { history: MetricPoint[] }) {
         )
       })}
       <path
-        d={buildSeriesPath(coValues, coRange.min, coRange.max, padding.left, padding.top, plotWidth, plotHeight)}
-        fill="none"
-        stroke="#10B981"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-      <path
         d={buildSeriesPath(lambdaValues, lambdaRange.min, lambdaRange.max, padding.left, padding.top, plotWidth, plotHeight)}
         fill="none"
         stroke="#3B82F6"
@@ -655,16 +1077,10 @@ function MultiChart({ history }: { history: MetricPoint[] }) {
         strokeWidth="1.8"
         strokeLinecap="round"
       />
-      <text x="2" y="12" className="svg-label" fill="#10B981">
-        {coRange.max.toFixed(1)} ppm
-      </text>
-      <text x="6" y={bottomLabelY} className="svg-label" fill="#10B981">
-        {coRange.min.toFixed(1)} ppm
-      </text>
-      <text x={width / 2} y="12" textAnchor="middle" className="svg-label" fill="#3B82F6">
+      <text x="2" y="12" className="svg-label" fill="#3B82F6">
         λ {lambdaRange.max.toFixed(2)}
       </text>
-      <text x={width / 2} y={bottomLabelY} textAnchor="middle" className="svg-label" fill="#3B82F6">
+      <text x="6" y={bottomLabelY} className="svg-label" fill="#3B82F6">
         λ {lambdaRange.min.toFixed(2)}
       </text>
       <text x={width - 2} y="12" textAnchor="end" className="svg-label" fill="#F59E0B">
@@ -680,63 +1096,6 @@ function MultiChart({ history }: { history: MetricPoint[] }) {
         now
       </text>
     </svg>
-  )
-}
-
-function PlantDiagram({ n2Label }: { n2Label: string }) {
-  return (
-    <svg className="plant-svg" viewBox="0 0 900 330" preserveAspectRatio="xMidYMid meet">
-      <rect x="68" y="146" width="110" height="38" rx="7" className="plant-node" />
-      <text x="123" y="169" textAnchor="middle" className="plant-text">
-        연료 공급
-      </text>
-      <rect x="248" y="131" width="170" height="68" rx="8" className="plant-node active" />
-      <text x="333" y="160" textAnchor="middle" className="plant-text active">
-        합성가스
-      </text>
-      <text x="333" y="178" textAnchor="middle" className="plant-text active">
-        반응기
-      </text>
-      <circle cx="520" cy="165" r="46" className="plant-node" />
-      <text x="520" y="162" textAnchor="middle" className="plant-text">
-        가스
-      </text>
-      <text x="520" y="176" textAnchor="middle" className="plant-text">
-        터빈
-      </text>
-      <rect x="652" y="146" width="116" height="38" rx="7" className="plant-node" />
-      <text x="710" y="169" textAnchor="middle" className="plant-text">
-        배기 라인
-      </text>
-      <rect x="272" y="276" width="122" height="28" rx="5" className="plant-node secondary" />
-      <text x="333" y="293" textAnchor="middle" className="plant-text secondary">
-        {n2Label}
-      </text>
-    </svg>
-  )
-}
-
-function OverlayMetric({
-  label,
-  value,
-  caution,
-  primary,
-}: {
-  label: string
-  value: string
-  caution?: boolean
-  primary?: boolean
-}) {
-  const className = primary ? 'overlay-metric primary' : caution ? 'overlay-metric caution' : 'overlay-metric'
-
-  return (
-    <div className={className}>
-      <div className="overlay-metric-label">{label}</div>
-      <div className={caution ? 'overlay-metric-value caution-text' : primary ? 'overlay-metric-value primary-text' : 'overlay-metric-value'}>
-        <span className={caution ? 'overlay-metric-dot caution' : primary ? 'overlay-metric-dot primary' : 'overlay-metric-dot'} />
-        {value}
-      </div>
-    </div>
   )
 }
 
@@ -812,10 +1171,167 @@ function getRange(values: number[]) {
   }
 }
 
-function headroomTone(value: number, cautionThreshold: number, dangerThreshold: number) {
-  if (value <= dangerThreshold) return 'summary-value-danger'
-  if (value <= cautionThreshold) return 'summary-value-caution'
+// 여유만 있으면(양수) 안전색, 임계 초과(음수)일 때만 위험색.
+function headroomTone(value: number) {
+  return value < 0 ? 'summary-value-danger' : 'summary-value-safe'
+}
+
+// 임계 여유 표기: 정상은 값만, 초과(음수)만 "-N"으로 강조.
+function formatHeadroom(value: number, digits: number) {
+  const abs = Math.abs(value).toFixed(digits)
+  if (Number(abs) === 0) return `0.${'0'.repeat(digits)}`
+  return value < 0 ? `-${abs}` : abs
+}
+
+type OutputTableRow = {
+  name: string
+  unit: string
+  currentText: string
+  ratedText: string
+  deviationText: string
+  deviationTone: string
+  rangeText: string
+  status: string
+}
+
+// 동적 출력값 4종 — 정격값은 DT InitialOutput/FeatureConfig SoT, 임계는 백엔드 thresholds.
+// CO는 학습 타겟에서 제외됐고 백엔드 WS도 보내지 않아 표에서 제외, MultiChart 합성식만 유지.
+function buildOutputTableRows(args: {
+  displayedNox: number
+  metrics: ConsoleMetrics
+  history: MetricPoint[]
+  thresholds: Thresholds
+}): OutputTableRow[] {
+  const { displayedNox, metrics, history, thresholds } = args
+  // displayedNox가 15% O2 보정값이므로 ranges도 동일 보정값 계열로 통일
+  const noxRange = history.length > 0
+    ? getRange(history.map((p) => p.nox15pct))
+    : { min: displayedNox, max: displayedNox }
+  const exhaustRange = history.length > 0
+    ? getRange(history.map((p) => p.exhaust))
+    : { min: metrics.exhaust, max: metrics.exhaust }
+  const lambdaRange = history.length > 0
+    ? getRange(history.map((p) => p.lambda))
+    : { min: metrics.lambda, max: metrics.lambda }
+  const efficiencyRangePct = history.length > 0
+    ? getRange(history.map((p) => p.efficiency * 100))
+    : { min: metrics.efficiency * 100, max: metrics.efficiency * 100 }
+
+  return [
+    {
+      name: 'NOx',
+      unit: 'ppm',
+      currentText: displayedNox.toFixed(1),
+      ratedText: NOX_RATED.toFixed(1),
+      ...formatDeviation(displayedNox - NOX_RATED, 1, 5, 10),
+      rangeText: `${noxRange.min.toFixed(1)} ~ ${noxRange.max.toFixed(1)}`,
+      status: displayedNox > thresholds.noxLimit ? '위험' : '정상',
+    },
+    {
+      name: '배기온도',
+      unit: '°C',
+      currentText: metrics.exhaust.toFixed(1),
+      ratedText: EXHAUST_RATED.toFixed(1),
+      ...formatDeviation(metrics.exhaust - EXHAUST_RATED, 1, 15, 30),
+      rangeText: `${exhaustRange.min.toFixed(1)} ~ ${exhaustRange.max.toFixed(1)}`,
+      status: exhaustStatus(metrics.exhaust, thresholds),
+    },
+    {
+      name: '발전 효율',
+      unit: '%',
+      currentText: (metrics.efficiency * 100).toFixed(1),
+      ratedText: (EFFICIENCY_RATED * 100).toFixed(1),
+      ...formatDeviation((metrics.efficiency - EFFICIENCY_RATED) * 100, 1, 2, 5),
+      rangeText: `${efficiencyRangePct.min.toFixed(1)} ~ ${efficiencyRangePct.max.toFixed(1)}`,
+      status: efficiencyTableStatus(metrics.efficiency, thresholds),
+    },
+    {
+      name: '공기비',
+      unit: '',
+      currentText: metrics.lambda.toFixed(2),
+      ratedText: LAMBDA_RATED.toFixed(2),
+      ...formatDeviation(metrics.lambda - LAMBDA_RATED, 2, 0.05, 0.1),
+      rangeText: `${lambdaRange.min.toFixed(2)} ~ ${lambdaRange.max.toFixed(2)}`,
+      status: lambdaStatus(metrics.lambda, thresholds),
+    },
+  ]
+}
+
+function formatDeviation(
+  delta: number,
+  digits: number,
+  cautionAbs: number,
+  dangerAbs: number,
+): { deviationText: string; deviationTone: string } {
+  const abs = Math.abs(delta)
+  const sign = delta >= 0 ? '+' : '−'
+  const text = `${sign}${abs.toFixed(digits)}`
+  const tone =
+    abs >= dangerAbs ? 'deviation-danger'
+    : abs >= cautionAbs ? 'deviation-caution'
+    : 'deviation-normal'
+  return { deviationText: text, deviationTone: tone }
+}
+
+// 효율은 정격(0.89) 이상이면 항상 정상 — 미만일 때만 caution/danger 임계 사용.
+function efficiencyKpiStatus(efficiency: number, t: Thresholds): string {
+  if (efficiency < t.efficiencyDanger) return '위험'
+  if (efficiency < t.efficiencyCaution) return '주의'
+  return '정상'
+}
+
+function efficiencyTableStatus(efficiency: number, t: Thresholds): string {
+  return efficiencyKpiStatus(efficiency, t)
+}
+
+function ForecastClockIcon() {
+  return (
+    <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+      <circle cx="9" cy="10" r="7" fill="none" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M9 6.5V10l2.4 1.6" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      <path d="M14.5 4.5l3 1.6-1.6 3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function formatForecastTargetKst(targetTime: string): string {
+  const parts = new Intl.DateTimeFormat('ko-KR', {
+    timeZone: 'Asia/Seoul',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(targetTime))
+  const lookup = (type: string) =>
+    parts.find((p) => p.type === type)?.value ?? '00'
+  // forecast는 1Hz WS payload — 0.1초 자리 제거.
+  return `${lookup('hour')}시 ${lookup('minute')}분 ${lookup('second')}초`
+}
+
+function efficiencyTone(efficiency: number, t: Thresholds): string {
+  if (efficiency < t.efficiencyDanger) return 'summary-value-danger'
+  if (efficiency < t.efficiencyCaution) return 'summary-value-caution'
   return 'summary-value-safe'
+}
+
+function formatEfficiencyHeadroom(efficiency: number, t: Thresholds): string {
+  // 임계 기준 %p 편차: 임계 이상 +N, 미만 -N, 정확히 0이면 부호 없이 0.0
+  const deltaPp = (efficiency - t.efficiencyCaution) * 100
+  const abs = Math.abs(deltaPp).toFixed(1)
+  if (abs === '0.0') return '0.0'
+  return deltaPp > 0 ? `+${abs}` : `-${abs}`
+}
+
+function exhaustStatus(value: number, t: Thresholds): string {
+  if (value >= t.exhaustDangerC) return '위험'
+  if (value >= t.exhaustCautionC) return '주의'
+  return '정상'
+}
+
+function lambdaStatus(value: number, t: Thresholds): string {
+  if (value <= t.lambdaDangerLo || value >= t.lambdaDangerHi) return '위험'
+  if (value <= t.lambdaCautionLo || value >= t.lambdaCautionHi) return '주의'
+  return '정상'
 }
 
 function statusClass(status: string) {
@@ -833,25 +1349,13 @@ function streamStatusLabel(status: StreamStatus): { text: string; tone: string }
       return { text: 'CONNECTING', tone: 'caution' }
     case 'reconnecting':
       return { text: 'RECONNECTING', tone: 'caution' }
+    case 'restarting':
+      return { text: 'RESTARTING', tone: 'caution' }
     case 'disconnected':
       return { text: 'OFFLINE', tone: 'alert' }
     case 'mock':
       return { text: 'TEST', tone: 'normal' }
   }
-}
-
-function EyeIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M2.5 12s3.5-6 9.5-6s9.5 6 9.5 6s-3.5 6-9.5 6s-9.5-6-9.5-6Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-      />
-      <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" strokeWidth="1.5" />
-    </svg>
-  )
 }
 
 function ArrowDownIcon() {
@@ -892,3 +1396,39 @@ function CloseIcon() {
     </svg>
   )
 }
+
+function ServerRestartIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect
+        x="4"
+        y="4"
+        width="16"
+        height="6"
+        rx="1.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.4"
+      />
+      <rect
+        x="4"
+        y="14"
+        width="16"
+        height="6"
+        rx="1.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.4"
+      />
+      <circle cx="8" cy="7" r="0.9" fill="currentColor" />
+      <circle cx="8" cy="17" r="0.9" fill="currentColor" />
+      <path
+        d="M14 7h3M14 17h3"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+

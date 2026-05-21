@@ -1,0 +1,8 @@
+services:
+  backend:
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-igcc_db}
+      SENSOR_STREAM_POLL_ENABLED: ${SENSOR_STREAM_POLL_ENABLED:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy

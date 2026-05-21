@@ -44,6 +44,13 @@ data/**
 !data/**/
 !data/**/.gitkeep
 docs/**
+!docs/
+!docs/GIT_CONVENTIONS.md
+!docs/DB_CHANGE_REQUEST.md
+!docs/ci-cd/
+!docs/ci-cd/**
+!docs/data-platform/
+!docs/data-platform/**
 models/**
 !models/
 !models/**/
@@ -66,3 +73,14 @@ reports/generated/
 *.crt
 secrets/
 digital-twin/models/*.pkl
+digital_twin/models/*.pkl
+digital_twin/forecaster/models/*.pkl
+
+# Superpowers brainstorm sessions
+.superpowers/
+
+# Git worktrees
+.worktrees/
+
+# Agent 개인 도구 (Codex/Antigravity/Cursor 사용자만 필요)
+.agents/

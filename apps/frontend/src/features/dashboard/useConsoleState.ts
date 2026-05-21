@@ -2,9 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   appendHistory,
   applyVariableStep,
+  CONTROL_VARIABLE_KEYS,
+  createStateFromPayload,
   createStateFromSnapshot,
   createInitialConsoleState,
   deriveMetrics,
+  safeParseRealtimePayload,
   type BackendConsoleSnapshot,
   type ConsoleState,
   type Mode,
@@ -20,6 +23,7 @@ import {
  * - `connecting`   : 최초 핸드셰이크 진행 중
  * - `reconnecting` : 일시적 끊김 후 backoff 재시도 중 (마지막 snapshot 표시)
  * - `disconnected` : 재시도 모두 실패 — 화면은 마지막 실데이터 유지, mock 합성 안 함
+ * - `restarting`   : 사용자 명시적 서버 재시작(POST /api/reset) 진행 중 — health 폴링 + 새 세션 부트스트랩
  * - `mock`         : 백엔드 자체 비활성 (`VITE_ENABLE_BACKEND_STREAM=false`) — 명시적 mock
  */
 export type StreamStatus =
@@ -27,11 +31,25 @@ export type StreamStatus =
   | 'connecting'
   | 'reconnecting'
   | 'disconnected'
+  | 'restarting'
   | 'mock'
+
+export type RestartOutcome =
+  | { kind: 'ok' }
+  | { kind: 'invalid-password'; message: string }
+  | { kind: 'unavailable'; message: string }
+  | { kind: 'error'; message: string }
 
 const RECONNECT_DELAYS_MS = [1000, 2000, 4000] // exponential backoff 최대 3회
 const NORMAL_CLOSE_CODES = new Set([1000]) // 명시적 stop / 정상 종료
 const ACTIVE_SESSION_STORAGE_KEY = 'noxo.activeSessionId'
+
+// 서버 재시작(POST /api/reset) 후 컨테이너 부팅 대기.
+// 백엔드가 200을 즉시 반환 후 ~1~2초 내 죽고 ~10~20초 후 부활하므로
+// 초기 지연 + 최대 ~30초 폴링이면 충분히 커버.
+const RESTART_INITIAL_DELAY_MS = 1500
+const RESTART_POLL_INTERVAL_MS = 1000
+const RESTART_POLL_MAX_MS = 30000
 
 export function useConsoleState(mode: Mode) {
   const tickRef = useRef(0)
@@ -62,14 +80,14 @@ export function useConsoleState(mode: Mode) {
   const startMockLoop = useCallback(() => {
     stopMockLoop()
     setStatus('mock')
-    // mock 모드에서는 차트 첫 렌더부터 자연스럽게 보이도록 seed history로 백필.
+    // mock 모드는 항상 sim 모드 + override=false로 작동 — realtime 토글은 backend 연동 전제.
     setState((current) =>
       current.history.length > 0 ? current : createInitialConsoleState(true),
     )
     mockTimerRef.current = window.setInterval(() => {
       tickRef.current += 1
       setState((current) => {
-        const metrics = deriveMetrics(current.variables, mode, tickRef.current)
+        const metrics = deriveMetrics(current.variables, 'sim', tickRef.current)
         return {
           ...current,
           metrics,
@@ -77,7 +95,7 @@ export function useConsoleState(mode: Mode) {
         }
       })
     }, 1000)
-  }, [mode, stopMockLoop])
+  }, [stopMockLoop])
 
   const cancelReconnect = useCallback(() => {
     if (reconnectTimerRef.current !== null) {
@@ -116,14 +134,14 @@ export function useConsoleState(mode: Mode) {
 
       socket.onmessage = (event) => {
         tickRef.current += 1
-        const snapshot = safeParseSnapshot(event.data)
-        if (!snapshot) return
+        const payload = safeParseRealtimePayload(event.data)
+        if (!payload) return
 
         setState((current) => {
-          const next = createStateFromSnapshot(snapshot, current)
+          const next = createStateFromPayload(payload, current)
           return {
             ...next,
-            history: appendHistory(next.history, next.metrics, tickRef.current),
+            history: appendHistory(next.history, next.metrics, payload.tick),
           }
         })
       }
@@ -163,14 +181,32 @@ export function useConsoleState(mode: Mode) {
       cancelReconnect()
       reconnectTimerRef.current = window.setTimeout(async () => {
         reconnectTimerRef.current = null
-        try {
-          // 재연결 직후 즉시 마지막 실상태로 화면 동기화 (FRONTEND §7).
-          const snapshot = await fetchSnapshot(sid)
-          if (snapshot) {
-            setState((current) => createStateFromSnapshot(snapshot, current))
+        // 재연결 직후 snapshot으로 세션 생존 여부 판정 (FRONTEND §7).
+        const result = await fetchSnapshot(sid)
+        if (result.kind === 'gone') {
+          // backend reload/재시작으로 세션 소실 → 같은 sid 재연결은 영원히
+          // 404. 새 세션을 만들어 그 sid로 연결한다 (죽은 세션 무한 루프 차단).
+          try {
+            const session = await startSession()
+            sessionIdRef.current = session.sid
+            setStoredSessionId(session.sid)
+            reconnectAttemptRef.current = 0
+            if (session.snapshot) {
+              setState((current) =>
+                createStateFromSnapshot(session.snapshot!, current),
+              )
+            }
+            connectStream(session.sid, true)
+          } catch (err) {
+            console.error('session recreate after loss failed', err)
+            setStatus('disconnected')
           }
-        } catch (err) {
-          console.warn('snapshot restore failed before reconnect', err)
+          return
+        }
+        if (result.kind === 'ok') {
+          setState((current) =>
+            createStateFromSnapshot(result.snapshot, current),
+          )
         }
         connectStream(sid, true)
       }, delay)
@@ -222,7 +258,7 @@ export function useConsoleState(mode: Mode) {
 
     async function connectBackend() {
       try {
-        const session = await startSession(mode)
+        const session = await startSession()
         if (cancelled) {
           await stopSession(session.sid)
           return
@@ -255,112 +291,246 @@ export function useConsoleState(mode: Mode) {
         void stopSession(sid)
       }
     }
-  }, [connectStream, disconnectStream, enableBackend, mode, startMockLoop, stopMockLoop])
+    // 의도: mode 전환은 POST /api/session/{sid}/mode로 처리한다(setMode 액션).
+    // mode를 deps에 두면 토글마다 세션이 재생성되어 status가 live→connecting→live로 깜빡이고
+    // 누적된 시계열도 리셋되므로 의존성에서 제외한다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectStream, disconnectStream, enableBackend, startMockLoop, stopMockLoop])
 
-  return {
-    state,
-    status,
-    setActiveVar: (activeVar: VariableKey) =>
-      setState((current) => ({ ...current, activeVar })),
-    updateActiveVariableConfig: (update: VariableConfigUpdate) =>
-      setState((current) => {
-        const active = current.variables[current.activeVar]
-        // 백엔드 DEFAULT_CONTROL_BOUNDS와 동일한 seed 한계가 절대 상한.
-        // 이 콘솔의 모달은 운영자 개인 가드레일 — 백엔드 한계를 넘어설 수 없다.
-        const seed = variableSeed[current.activeVar]
-        const lo = Math.max(seed.min, Math.min(update.min, update.max))
-        const hi = Math.min(seed.max, Math.max(update.min, update.max))
-        const nextMin = Math.min(lo, hi)
-        const nextMax = Math.max(lo, hi)
-        const nextValue = roundForDigits(
-          Math.min(nextMax, Math.max(nextMin, active.value)),
-          active.digits,
-        )
+  // 액션 함수들은 매 렌더 새 참조가 되면 ServicePage의 useEffect[mode, notifyBackendMode]가
+  // 매 tick 발화되어 /mode 무한 호출 + /control 누락이 발생한다. useCallback + stateRef로
+  // stable identity 유지. state.variables가 필요한 액션은 stateRef를 통해 최신값 접근.
+  const stateRef = useRef(state)
+  useEffect(() => {
+    stateRef.current = state
+  }, [state])
 
-        return {
-          ...current,
-          variables: {
-            ...current.variables,
-            [current.activeVar]: {
-              ...active,
-              min: roundForDigits(nextMin, active.digits),
-              max: roundForDigits(nextMax, active.digits),
-              step: roundForDigits(Math.max(update.step, 0), active.digits),
-              value: nextValue,
-            },
-          },
-        }
-      }),
-    restoreActiveVariableDefaults: () =>
-      setState((current) => ({
+  const setActiveVar = useCallback((activeVar: VariableKey) => {
+    setState((current) => ({ ...current, activeVar }))
+  }, [])
+
+  const updateActiveVariableConfig = useCallback((update: VariableConfigUpdate) => {
+    setState((current) => {
+      const active = current.variables[current.activeVar]
+      // 백엔드 DEFAULT_CONTROL_BOUNDS와 동일한 seed 한계가 절대 상한.
+      // 이 콘솔의 모달은 운영자 개인 가드레일 — 백엔드 한계를 넘어설 수 없다.
+      const seed = variableSeed[current.activeVar]
+      const lo = Math.max(seed.min, Math.min(update.min, update.max))
+      const hi = Math.min(seed.max, Math.max(update.min, update.max))
+      const nextMin = Math.min(lo, hi)
+      const nextMax = Math.max(lo, hi)
+      const nextValue = roundForDigits(
+        Math.min(nextMax, Math.max(nextMin, active.value)),
+        active.digits,
+      )
+
+      return {
         ...current,
         variables: {
           ...current.variables,
           [current.activeVar]: {
-            ...current.variables[current.activeVar],
-            min: variableSeed[current.activeVar].min,
-            max: variableSeed[current.activeVar].max,
-            step: variableSeed[current.activeVar].step,
-          },
-        },
-      })),
-    toggleOverlay: () =>
-      setState((current) => ({
-        ...current,
-        overlayVisible: !current.overlayVisible,
-      })),
-    resetControls: () => {
-      tickRef.current += 1
-      if (enableBackend && sessionIdRef.current) {
-        const nextVariables = resetVariableValues(state.variables)
-        void sendControl(sessionIdRef.current, nextVariables)
-      }
-      setState((current) => resetConsoleState(current, mode, tickRef.current))
-    },
-    stepActiveVar: (direction: 1 | -1) => {
-      tickRef.current += 1
-      if (enableBackend && sessionIdRef.current) {
-        const active = state.variables[state.activeVar]
-        const nextValue = roundForDigits(
-          Math.min(
-            active.max,
-            Math.max(active.min, active.value + active.step * direction),
-          ),
-          active.digits,
-        )
-        void sendControl(sessionIdRef.current, {
-          ...state.variables,
-          [state.activeVar]: {
             ...active,
+            min: roundForDigits(nextMin, active.digits),
+            max: roundForDigits(nextMax, active.digits),
+            step: roundForDigits(Math.max(update.step, 0), active.digits),
             value: nextValue,
           },
-        })
+        },
       }
-      setState((current) =>
-        applyVariableStep(current, direction, mode, tickRef.current),
+    })
+  }, [])
+
+  const restoreActiveVariableDefaults = useCallback(() => {
+    setState((current) => ({
+      ...current,
+      variables: {
+        ...current.variables,
+        [current.activeVar]: {
+          ...current.variables[current.activeVar],
+          min: variableSeed[current.activeVar].min,
+          max: variableSeed[current.activeVar].max,
+          step: variableSeed[current.activeVar].step,
+        },
+      },
+    }))
+  }, [])
+
+  const toggleOverlay = useCallback(() => {
+    setState((current) => ({
+      ...current,
+      overlayVisible: !current.overlayVisible,
+    }))
+  }, [])
+
+  const resetControls = useCallback(() => {
+    tickRef.current += 1
+    if (enableBackend && sessionIdRef.current) {
+      const nextVariables = resetVariableValues(stateRef.current.variables)
+      void sendControl(sessionIdRef.current, nextVariables)
+      setState((current) => ({ ...current, variables: nextVariables }))
+      return
+    }
+    setState((current) => resetConsoleState(current, mode, tickRef.current))
+  }, [enableBackend, mode])
+
+  const stepActiveVar = useCallback((direction: 1 | -1) => {
+    tickRef.current += 1
+    // backend 연결 모드: variables만 즉시 갱신 + control POST.
+    // metrics는 다음 WS payload(override 적용된 값)로 갱신되므로 mock 합성 불가.
+    // mock 모드: applyVariableStep이 deriveMetrics로 합성된 값 채움.
+    if (enableBackend && sessionIdRef.current) {
+      const snapshot = stateRef.current
+      const active = snapshot.variables[snapshot.activeVar]
+      const nextValue = roundForDigits(
+        Math.min(
+          active.max,
+          Math.max(active.min, active.value + active.step * direction),
+        ),
+        active.digits,
       )
-    },
+      const nextVariables = {
+        ...snapshot.variables,
+        [snapshot.activeVar]: { ...active, value: nextValue },
+      }
+      void sendControl(sessionIdRef.current, nextVariables)
+      setState((current) => ({ ...current, variables: nextVariables }))
+      return
+    }
+    setState((current) =>
+      applyVariableStep(current, direction, mode, tickRef.current),
+    )
+  }, [enableBackend, mode])
+
+  const setMode = useCallback((nextMode: Mode) => {
+    const sid = sessionIdRef.current
+    if (sid && enableBackend) {
+      void changeMode(sid, nextMode)
+    }
+  }, [enableBackend])
+
+  const resetOverride = useCallback(() => {
+    const sid = sessionIdRef.current
+    if (sid && enableBackend) {
+      void resetOverrideRequest(sid)
+    }
+  }, [enableBackend])
+
+  // POST /api/reset → 백엔드/Kafka producer 컨테이너 동시 재시작.
+  // password 필수 — 백엔드 RESET_PASSWORD env와 비교.
+  // 응답 200이면 기존 WS 끊고 health 폴링 → 새 sid 발급 → WS 재연결.
+  // 401(불일치) / 503(미설정/비-Docker) / 기타는 호출자에 메시지로 전달.
+  const restartSession = useCallback(async (password: string): Promise<RestartOutcome> => {
+    if (!enableBackend) {
+      return {
+        kind: 'unavailable',
+        message: 'mock 모드에서는 서버 재시작을 사용할 수 없습니다.',
+      }
+    }
+    if (!password) {
+      return {
+        kind: 'invalid-password',
+        message: '비밀번호를 입력하세요.',
+      }
+    }
+
+    let response: Response
+    try {
+      response = await fetch(`${apiBaseUrl()}/api/reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+      })
+    } catch (error) {
+      console.warn('reset request failed', error)
+      return {
+        kind: 'error',
+        message: '서버 재시작 요청을 보내지 못했습니다.',
+      }
+    }
+
+    if (!response.ok) {
+      const message = await extractRestartErrorMessage(response)
+      if (response.status === 401) {
+        return { kind: 'invalid-password', message: '비밀번호가 일치하지 않습니다.' }
+      }
+      return response.status === 503
+        ? { kind: 'unavailable', message }
+        : { kind: 'error', message }
+    }
+
+    // 이후 자동 재연결을 막고 깔끔하게 끊는다 — 새 sid 발급 전에 옛 sid로 reconnect되면 404.
+    const previousSid = sessionIdRef.current
+    sessionIdRef.current = null
+    cancelReconnect()
+    reconnectAttemptRef.current = 0
+    expectedCloseRef.current = true
+    if (socketRef.current) {
+      socketRef.current.close()
+      socketRef.current = null
+    }
+    clearStoredSessionId(previousSid)
+    setStatus('restarting')
+
+    // 백엔드가 죽고 다시 살아날 때까지 대기.
+    await sleep(RESTART_INITIAL_DELAY_MS)
+    const ready = await pollBackendHealth()
+    if (!ready) {
+      setStatus('disconnected')
+      return {
+        kind: 'error',
+        message: '서버 응답 대기 시간이 초과되었습니다. 잠시 후 다시 시도하세요.',
+      }
+    }
+
+    try {
+      const session = await startSession()
+      sessionIdRef.current = session.sid
+      setStoredSessionId(session.sid)
+      reconnectAttemptRef.current = 0
+      if (session.snapshot) {
+        setState((current) => createStateFromSnapshot(session.snapshot!, current))
+      }
+      connectStream(session.sid)
+      return { kind: 'ok' }
+    } catch (error) {
+      console.error('post-restart session bootstrap failed', error)
+      setStatus('disconnected')
+      return {
+        kind: 'error',
+        message: '재시작 후 세션 재구성에 실패했습니다.',
+      }
+    }
+  }, [cancelReconnect, connectStream, enableBackend])
+
+  return {
+    state,
+    status,
+    setActiveVar,
+    updateActiveVariableConfig,
+    restoreActiveVariableDefaults,
+    toggleOverlay,
+    resetControls,
+    stepActiveVar,
+    setMode,
+    resetOverride,
+    restartSession,
   }
 }
 
-async function startSession(mode: Mode) {
+async function startSession() {
   const staleSid = getStoredSessionId()
   if (staleSid) {
     await stopSession(staleSid)
     clearStoredSessionId(staleSid)
   }
 
-  const initialCondition = {
-    [variableSeed.syngas.rawName]: variableSeed.syngas.base,
-    [variableSeed.n2.rawName]: variableSeed.n2.base,
-    [variableSeed.load.rawName]: variableSeed.load.base,
-  }
+  // 세션은 항상 sim 모드로 시작 — 사용자가 realtime 토글하면 POST /api/session/{sid}/mode로 전환.
+  const initialCondition = buildControlTagPayload((key) => variableSeed[key].base)
 
   const response = await fetch(`${apiBaseUrl()}/api/session/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      mode,
       initial_condition: initialCondition,
     }),
   })
@@ -373,27 +543,35 @@ async function startSession(mode: Mode) {
   }
 }
 
-async function fetchSnapshot(sid: string): Promise<BackendConsoleSnapshot | null> {
-  const response = await fetch(`${apiBaseUrl()}/api/session/${sid}/snapshot`)
-  if (!response.ok) return null
-  return (await response.json()) as BackendConsoleSnapshot
+// 'gone' = backend가 세션을 모름(404). reload/재시작으로 in-memory 세션이
+// 소실된 상태 → 같은 sid 재연결은 무의미하므로 새 세션을 만들어야 한다.
+type SnapshotResult =
+  | { kind: 'ok'; snapshot: BackendConsoleSnapshot }
+  | { kind: 'gone' }
+  | { kind: 'error' }
+
+async function fetchSnapshot(sid: string): Promise<SnapshotResult> {
+  try {
+    const response = await fetch(`${apiBaseUrl()}/api/session/${sid}/snapshot`)
+    if (response.status === 404) return { kind: 'gone' }
+    if (!response.ok) return { kind: 'error' }
+    return {
+      kind: 'ok',
+      snapshot: (await response.json()) as BackendConsoleSnapshot,
+    }
+  } catch {
+    return { kind: 'error' }
+  }
 }
 
 function resetVariableValues(variables: ConsoleState['variables']): ConsoleState['variables'] {
-  return {
-    syngas: {
-      ...variables.syngas,
-      value: variableSeed.syngas.base,
-    },
-    n2: {
-      ...variables.n2,
-      value: variableSeed.n2.base,
-    },
-    load: {
-      ...variables.load,
-      value: variableSeed.load.base,
-    },
-  }
+  return CONTROL_VARIABLE_KEYS.reduce<ConsoleState['variables']>((acc, key) => {
+    acc[key] = {
+      ...variables[key],
+      value: variableSeed[key].base,
+    }
+    return acc
+  }, structuredClone(variables))
 }
 
 function resetConsoleState(current: ConsoleState, mode: Mode, tick: number): ConsoleState {
@@ -412,17 +590,78 @@ async function sendControl(
   sid: string,
   variables: ConsoleState['variables'],
 ) {
-  const payload = {
-    [variableSeed.syngas.rawName]: variables.syngas.value,
-    [variableSeed.n2.rawName]: variables.n2.value,
-    [variableSeed.load.rawName]: variables.load.value,
-  }
+  // 백엔드 ControlPayload는 10개 변수 모두 required (apps/backend/app/schemas/session.py).
+  const payload = buildControlTagPayload((key) => variables[key].value)
 
   await fetch(`${apiBaseUrl()}/api/session/${sid}/control`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
+}
+
+async function changeMode(sid: string, mode: Mode): Promise<void> {
+  const response = await fetch(`${apiBaseUrl()}/api/session/${sid}/mode`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode }),
+  })
+  if (!response.ok) throw new Error(`set mode failed: ${response.status}`)
+}
+
+async function resetOverrideRequest(sid: string): Promise<void> {
+  await fetch(`${apiBaseUrl()}/api/session/${sid}/reset`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
+async function extractRestartErrorMessage(response: Response): Promise<string> {
+  try {
+    const body = (await response.json()) as { detail?: string; message?: string }
+    if (typeof body.detail === 'string' && body.detail.length > 0) return body.detail
+    if (typeof body.message === 'string' && body.message.length > 0) return body.message
+  } catch {
+    // JSON 아님 — fallback 메시지로 떨어진다
+  }
+  return response.status === 503
+    ? '현재 환경에서는 서버 재시작이 지원되지 않습니다.'
+    : `서버 재시작 요청이 실패했습니다 (HTTP ${response.status}).`
+}
+
+// GET /api/health 200을 받을 때까지 일정 간격으로 폴링.
+// AbortController로 단일 시도 타임아웃을 짧게 잡아 — 백엔드가 죽어 있는 동안 fetch가 길게 걸리지 않게.
+async function pollBackendHealth(): Promise<boolean> {
+  const deadline = Date.now() + RESTART_POLL_MAX_MS
+  while (Date.now() < deadline) {
+    try {
+      const controller = new AbortController()
+      const timer = window.setTimeout(() => controller.abort(), 1500)
+      const response = await fetch(`${apiBaseUrl()}/api/health`, {
+        signal: controller.signal,
+      })
+      window.clearTimeout(timer)
+      if (response.ok) return true
+    } catch {
+      // 컨테이너 부팅 중 — 다음 폴링까지 대기
+    }
+    await sleep(RESTART_POLL_INTERVAL_MS)
+  }
+  return false
+}
+
+function buildControlTagPayload(
+  pickValue: (key: VariableKey) => number,
+): Record<string, number> {
+  return CONTROL_VARIABLE_KEYS.reduce<Record<string, number>>((acc, key) => {
+    acc[variableSeed[key].rawName] = pickValue(key)
+    return acc
+  }, {})
 }
 
 async function stopSession(sid: string) {
@@ -468,14 +707,6 @@ function buildWsUrl(sid: string) {
       : httpBase.replace('http://', 'ws://')
     : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
   return `${wsBase}/api/session/${sid}/stream`
-}
-
-function safeParseSnapshot(raw: string): BackendConsoleSnapshot | null {
-  try {
-    return JSON.parse(raw) as BackendConsoleSnapshot
-  } catch {
-    return null
-  }
 }
 
 function roundForDigits(value: number, digits: number) {

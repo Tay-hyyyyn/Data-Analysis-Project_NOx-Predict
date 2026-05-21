@@ -8,65 +8,96 @@ from typing import Annotated
 
 from fastapi import Depends, Request
 
-from sqlalchemy.orm import Session
-
-from app.adapters.predictor import Predictor
+from app.adapters.forecaster import Forecaster
+from app.adapters.simulator import Simulator
 from app.config import Settings, get_settings
-from app.core.input_injector import InputInjector
-from app.core.sim_loop import SimLoopManager
-from app.core.state_store import StateStore
+from app.core.kafka_stream import KafkaSensorStream
+from app.core.sensor_buffer import SensorBuffer
+from app.core.session import Session
 from app.core.ws_manager import WebSocketManager
-from app.db.session import get_db_session
-from app.services.prediction_service import PredictionService
-from app.services.sensor_service import SensorService
+from app.repositories.simulation_log_repo import SimulationLogRepository
+from app.services.forecast_service import ForecastService
+from app.services.reset_service import ResetService
 from app.services.session_service import SessionService
 from app.services.threshold_service import ThresholdService
-
-
-def get_state_store(request: Request) -> StateStore:
-    return request.app.state.state_store
-
-
-def get_input_injector(request: Request) -> InputInjector:
-    return request.app.state.input_injector
 
 
 def get_ws_manager(request: Request) -> WebSocketManager:
     return request.app.state.ws_manager
 
 
-def get_sim_loop(request: Request) -> SimLoopManager:
-    return request.app.state.sim_loop
+def get_simulator(request: Request) -> Simulator:
+    return request.app.state.simulator
 
 
-def get_predictor(request: Request) -> Predictor:
-    return request.app.state.predictor
+def get_forecaster(request: Request) -> Forecaster:
+    return request.app.state.forecaster
+
+
+def get_kafka_sensor_stream(request: Request) -> KafkaSensorStream:
+    return request.app.state.kafka_sensor_stream
+
+
+def get_simulation_log_repo(request: Request) -> SimulationLogRepository | None:
+    return getattr(request.app.state, "simulation_log_repo", None)
+
+
+def get_sensor_buffer(request: Request) -> SensorBuffer:
+    return request.app.state.sensor_buffer
+
+
+def get_sessions(request: Request) -> dict[str, Session]:
+    return request.app.state.sessions
+
+
+def get_realtime_engine(request: Request):
+    return request.app.state.realtime_engine
 
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
-DbDep = Annotated["Session | None", Depends(get_db_session)]
-
-
-def get_sensor_service(db: DbDep) -> SensorService:
-    return SensorService(db)
 
 
 def get_session_service(
     settings: SettingsDep,
-    state_store: Annotated[StateStore, Depends(get_state_store)],
-    injector: Annotated[InputInjector, Depends(get_input_injector)],
-    sim_loop: Annotated[SimLoopManager, Depends(get_sim_loop)],
+    sessions: Annotated[dict, Depends(get_sessions)],
+    sensor_buffer: Annotated[SensorBuffer, Depends(get_sensor_buffer)],
     ws_manager: Annotated[WebSocketManager, Depends(get_ws_manager)],
+    simulator: Annotated[Simulator, Depends(get_simulator)],
+    realtime_engine: Annotated[object, Depends(get_realtime_engine)],
+    simulation_log_repo: Annotated[
+        SimulationLogRepository | None, Depends(get_simulation_log_repo)
+    ],
 ) -> SessionService:
-    return SessionService(settings, state_store, injector, sim_loop, ws_manager)
+    return SessionService(
+        settings=settings,
+        sessions=sessions,
+        sensor_buffer=sensor_buffer,
+        ws_manager=ws_manager,
+        simulator=simulator,
+        realtime_engine=realtime_engine,
+        simulation_log_repo=simulation_log_repo,
+    )
 
 
-def get_prediction_service(
-    state_store: Annotated[StateStore, Depends(get_state_store)],
-    predictor: Annotated[Predictor, Depends(get_predictor)],
-) -> PredictionService:
-    return PredictionService(state_store, predictor)
+def get_forecast_service(
+    sessions: Annotated[dict, Depends(get_sessions)],
+    forecaster: Annotated[Forecaster, Depends(get_forecaster)],
+    sensor_buffer: Annotated[SensorBuffer, Depends(get_sensor_buffer)],
+    simulation_log_repo: Annotated[
+        SimulationLogRepository | None, Depends(get_simulation_log_repo)
+    ],
+) -> ForecastService:
+    return ForecastService(
+        sessions,
+        forecaster,
+        sensor_buffer=sensor_buffer,
+        simulation_log_repo=simulation_log_repo,
+    )
 
 
-def get_threshold_service(db: DbDep) -> ThresholdService:
-    return ThresholdService(db)
+def get_threshold_service() -> ThresholdService:
+    return ThresholdService()
+
+
+def get_reset_service(request: Request) -> ResetService:
+    return request.app.state.reset_service

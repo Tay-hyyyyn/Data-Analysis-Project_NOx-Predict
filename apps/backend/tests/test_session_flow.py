@@ -1,24 +1,34 @@
-"""세션 + control + WebSocket 통합 테스트.
+"""세션 + 모드/리셋 + control 통합 테스트 (envelope v1)."""
 
-프론트엔드가 실제로 따라가는 시나리오를 그대로 재현:
-  start → control 변경 → WS로 push 받은 메시지에서 변화 확인 → stop.
-"""
-
-import json
 import uuid
 
+# 제어 변수 10개 태그 — DT_ARCHITECTURE.md §4 기준
 CONTROL_TAGS = {
     "syngas": "IGCC.CC.G1.ca_fqsg_cl",
-    "n2": "IGCC.CC.G1.NQKR3_MONITOR",
     "igv": "IGCC.CC.G1.csgv",
+    "n2": "IGCC.CC.G1.NQKR3_MONITOR",
+    "n2_valve_1": "IGCC.CC.G1.nicvs1",
+    "syngas_srv": "IGCC.CC.G1.FSAGR",
+    "syngas_gcv_1": "IGCC.CC.G1.FSAG11",
+    "syngas_gcv_1a": "IGCC.CC.G1.FSAG11A",
+    "syngas_gcv_2": "IGCC.CC.G1.FSAG12",
+    "ibh_valve": "IGCC.CC.G1.CSBHX",
+    "n2_flow": "IGCC.CC.G1.NQJ",
 }
 
 
 def _initial_payload():
     return {
-        CONTROL_TAGS["syngas"]: 1500.0,
-        CONTROL_TAGS["n2"]: 200.0,
+        CONTROL_TAGS["syngas"]: 50.0,
         CONTROL_TAGS["igv"]: 75.0,
+        CONTROL_TAGS["n2"]: 20.0,
+        CONTROL_TAGS["n2_valve_1"]: 50.0,
+        CONTROL_TAGS["syngas_srv"]: 60.0,
+        CONTROL_TAGS["syngas_gcv_1"]: 55.0,
+        CONTROL_TAGS["syngas_gcv_1a"]: 55.0,
+        CONTROL_TAGS["syngas_gcv_2"]: 55.0,
+        CONTROL_TAGS["ibh_valve"]: 30.0,
+        CONTROL_TAGS["n2_flow"]: 30.0,
     }
 
 
@@ -28,107 +38,162 @@ def test_threshold_endpoint(client):
     assert "nox_ppm_limit" in res.json()
 
 
-def test_session_lifecycle(client):
-    # 1. 세션 시작
-    res = client.post("/api/session/start", json={"initial_condition": _initial_payload()})
+def test_session_start_returns_envelope_metadata(client):
+    res = client.post("/api/session/start", json={})
     assert res.status_code == 200
     body = res.json()
-    sid = body["sid"]
-    assert sid
+    assert body["sid"]
+    assert body["mode"] == "sim"
+    assert body["control_override"] is None
+    assert "created_at" in body
 
-    # 2. snapshot 조회
+
+def test_get_session_metadata(client):
+    sid = client.post("/api/session/start", json={}).json()["sid"]
+    res = client.get(f"/api/session/{sid}")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["sid"] == sid
+    assert body["mode"] == "sim"
+    assert body["control_override"] is None
+    assert "created_at" in body and "last_active_at" in body
+
+
+def test_get_session_snapshot_returns_last_stream_payload(client):
+    sid = client.post("/api/session/start", json={}).json()["sid"]
+    client.app.state.realtime_engine._last_payloads[sid] = {
+        "v": 1,
+        "sid": sid,
+        "tick": 7,
+        "ts": "2026-05-13T06:00:00.000Z",
+        "mode": "realtime",
+        "override_active": False,
+        "current": {
+            "controls": {
+                "syngas_flow": 50.0,
+                "igv_opening": 75.0,
+                "n2_offset": 20.0,
+                "n2_valve_1": 50.0,
+                "syngas_srv": 60.0,
+                "syngas_gcv_1": 55.0,
+                "syngas_gcv_1a": 55.0,
+                "syngas_gcv_2": 55.0,
+                "ibh_valve": 30.0,
+                "n2_flow": 30.0,
+            },
+            "outputs": {
+                "nox": 28.5,
+                "exhaust_temp": 580.0,
+                "power": 165.2,
+                "lambda_": 2.1,
+                "efficiency": 0.42,
+            },
+        },
+        "kafka_latest": None,
+        "forecast": {
+            "predicted_nox": 31.2,
+            "target_time": "2026-05-13T06:05:00.000Z",
+            "threshold_value": 30.0,
+            "threshold_exceeded": True,
+        },
+        "warning": None,
+    }
+
     res = client.get(f"/api/session/{sid}/snapshot")
     assert res.status_code == 200
-    snap = res.json()
-    assert snap["sid"] == sid
-    assert snap["target"][CONTROL_TAGS["syngas"]] == 1500.0
-    assert "nox" in snap["output"]
-    assert "lambda" in snap["output"]
-    assert "power" in snap["output"]
+    body = res.json()
+    assert body["sid"] == sid
+    assert body["t"] == 7
+    assert body["current"]["syngas_flow"] == 50.0
+    assert body["output"]["nox"] == 28.5
+    assert body["output"]["predicted_nox"] == 31.2
+    assert body["warning"] is False
 
-    # 3. control 변경 (합성가스 유량 ↑)
-    new_payload = {**_initial_payload(), CONTROL_TAGS["syngas"]: 1800.0}
-    res = client.post(f"/api/session/{sid}/control", json=new_payload)
-    assert res.status_code == 200
-    assert res.json()["ack"] is True
 
-    # 4. 종료
-    res = client.post(f"/api/session/{sid}/stop")
-    assert res.status_code == 200
-
-    # 5. 종료 후 snapshot은 404
-    res = client.get(f"/api/session/{sid}/snapshot")
+def test_get_session_404(client):
+    res = client.get("/api/session/non-existent")
     assert res.status_code == 404
 
 
-def test_control_validation(client):
-    res = client.post("/api/session/start", json={})
-    sid = res.json()["sid"]
+def test_post_mode_realtime(client):
+    sid = client.post("/api/session/start", json={}).json()["sid"]
+    res = client.post(f"/api/session/{sid}/mode", json={"mode": "realtime"})
+    assert res.status_code == 200
+    assert res.json()["mode"] == "realtime"
 
-    # 범위를 벗어난 값 → 422
+
+def test_post_mode_invalid_400(client):
+    sid = client.post("/api/session/start", json={}).json()["sid"]
+    res = client.post(f"/api/session/{sid}/mode", json={"mode": "bogus"})
+    # Pydantic literal validation은 422, 도메인 set_mode 검증은 400.
+    # Pydantic이 먼저 걸러 422가 정상.
+    assert res.status_code in (400, 422)
+
+
+def test_post_control_then_override_set(client):
+    sid = client.post("/api/session/start", json={}).json()["sid"]
+    res = client.post(f"/api/session/{sid}/control", json=_initial_payload())
+    assert res.status_code == 200
+    assert res.json()["control_override_set"] is True
+
+    info = client.get(f"/api/session/{sid}").json()
+    assert info["control_override"] is not None
+
+
+def test_post_control_in_realtime_409(client):
+    sid = client.post("/api/session/start", json={}).json()["sid"]
+    client.post(f"/api/session/{sid}/mode", json={"mode": "realtime"})
+    res = client.post(f"/api/session/{sid}/control", json=_initial_payload())
+    assert res.status_code == 409
+
+
+def test_post_reset_clears_override(client):
+    sid = client.post("/api/session/start", json={}).json()["sid"]
+    client.post(f"/api/session/{sid}/control", json=_initial_payload())
+    res = client.post(f"/api/session/{sid}/reset", json={})
+    assert res.status_code == 200
+    assert res.json()["control_override"] is None
+
+
+def test_post_reset_realtime_is_noop(client):
+    sid = client.post("/api/session/start", json={}).json()["sid"]
+    client.post(f"/api/session/{sid}/mode", json={"mode": "realtime"})
+    res = client.post(f"/api/session/{sid}/reset", json={})
+    assert res.status_code == 200
+
+
+def test_control_validation_range(client):
+    sid = client.post("/api/session/start", json={}).json()["sid"]
     bad = {**_initial_payload(), CONTROL_TAGS["igv"]: 999.0}
     res = client.post(f"/api/session/{sid}/control", json=bad)
-    assert res.status_code == 422
-
-    client.post(f"/api/session/{sid}/stop")
-
-
-def test_websocket_stream(client):
-    res = client.post("/api/session/start", json={})
-    sid = res.json()["sid"]
-
-    with client.websocket_connect(f"/api/session/{sid}/stream") as ws:
-        # 첫 메시지: 초기 snapshot 또는 첫 step push
-        msg = ws.receive_json()
-        for key in ("sid", "t", "syngas_flow", "nox", "co", "exhaust_temp", "lambda", "power"):
-            assert key in msg, f"missing key: {key}"
-        assert msg["sid"] == sid
-
-    client.post(f"/api/session/{sid}/stop")
+    # spec §2.1 — 값 범위 초과는 400 (Pydantic schema 오류와 구분)
+    assert res.status_code == 400
 
 
-def test_stop_unknown_sid_returns_ack(client):
+def test_stop_unknown_sid_returns_ok(client):
     sid = str(uuid.uuid4())
-
     res = client.post(f"/api/session/{sid}/stop")
-
     assert res.status_code == 200
-    assert res.json()["ack"] is True
 
 
 def test_stop_is_idempotent(client):
-    res = client.post("/api/session/start", json={})
-    sid = res.json()["sid"]
-
+    sid = client.post("/api/session/start", json={}).json()["sid"]
     first = client.post(f"/api/session/{sid}/stop")
     second = client.post(f"/api/session/{sid}/stop")
-    snapshot = client.get(f"/api/session/{sid}/snapshot")
-
     assert first.status_code == 200
-    assert first.json()["ack"] is True
     assert second.status_code == 200
-    assert second.json()["ack"] is True
-    assert snapshot.status_code == 404
 
 
 def test_prediction_endpoint(client):
-    res = client.post("/api/prediction", json={"target_minutes": 5})
+    res = client.post("/api/prediction", json={})
     assert res.status_code == 200
     body = res.json()
     for key in ("predicted_nox", "target_time", "threshold_exceeded", "threshold_value"):
         assert key in body
 
 
-def test_sensor_endpoints(client):
-    res = client.get("/api/sensor/latest")
+def test_prediction_endpoint_with_sid(client):
+    sid = client.post("/api/session/start", json={}).json()["sid"]
+    res = client.post("/api/prediction", json={"sid": sid})
     assert res.status_code == 200
-    body = res.json()
-    # DB 정의서 v1.0 컬럼명을 그대로 응답
-    for key in ("measured_at", "nox_ppm", "syngas_flow", "generator_output"):
-        assert key in body
-
-    res = client.get("/api/sensor/history?limit=10")
-    assert res.status_code == 200
-    items = res.json()
-    assert isinstance(items, list)
-    assert len(items) <= 10
+    assert "predicted_nox" in res.json()

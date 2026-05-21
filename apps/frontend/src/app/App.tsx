@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import type { StreamStatus } from '../features/dashboard/useConsoleState'
 
-type AppMode = 'sim' | 'pred'
+type AppMode = 'sim' | 'realtime'
 
 export type AppOutletContext = {
   mode: AppMode
@@ -10,13 +10,14 @@ export type AppOutletContext = {
   openSettings: () => void
   closeSettings: () => void
   reportStreamStatus: (status: StreamStatus) => void
+  clock: string
 }
 
 const navItems = [
   { to: '/', label: '대시보드' },
   { to: '/about', label: '프로젝트 소개' },
   { to: '/database', label: 'DB 구조' },
-  { to: '/digital-twin', label: 'Digital Twin' },
+  { to: '/simulation', label: '시뮬레이션' },
   { to: '/team', label: '팀원 소개' },
 ]
 
@@ -57,8 +58,9 @@ export function App() {
       },
       closeSettings: () => setSettingsOpen(false),
       reportStreamStatus: setStreamStatus,
+      clock,
     }),
-    [isServicePage, mode, visibleSettingsOpen],
+    [isServicePage, mode, visibleSettingsOpen, clock],
   )
 
   return (
@@ -93,8 +95,8 @@ export function App() {
               </button>
               <button
                 type="button"
-                className={mode === 'pred' ? 'mode-opt active' : 'mode-opt'}
-                onClick={() => setMode('pred')}
+                className={mode === 'realtime' ? 'mode-opt active' : 'mode-opt'}
+                onClick={() => setMode('realtime')}
               >
                 실시간 예측
               </button>
@@ -111,7 +113,6 @@ export function App() {
             >
               <GearIcon />
             </button>
-            <div className="nav-clock mono">{clock}</div>
           </div>
         ) : null}
       </header>
@@ -129,6 +130,8 @@ function streamStatusLabel(status: StreamStatus): { text: string; tone: string }
       return { text: 'CONNECTING', tone: 'caution' }
     case 'reconnecting':
       return { text: 'RECONNECTING', tone: 'caution' }
+    case 'restarting':
+      return { text: 'RESTARTING', tone: 'caution' }
     case 'disconnected':
       return { text: 'OFFLINE', tone: 'alert' }
     case 'mock':

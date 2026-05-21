@@ -1,90 +1,70 @@
-"""sensor_data 조회 repository.
+"""DB sensor_data 테이블 접근 레이어.
 
-DB 미연결 / 테이블 없음 상태에서는 더미 시계열로 fallback.
-실제 운영에서는 DB 정의서 v1.0 sensor_data 테이블에서 SELECT.
+DB 컬럼명 ↔ IGCC 태그명 매핑은 운영 환경에서 명시 주입한다.
+
+R5 — 기존 DbContext.session_factory(sessionmaker[Session])는 동기이므로
+asyncio thread executor에서 호출하여 async 인터페이스 유지.
 """
 
-import math
-from datetime import datetime, timedelta, timezone
+import asyncio
+import pandas as pd
+from sqlalchemy import text
+from sqlalchemy.orm import sessionmaker, Session
 
-from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from app.exceptions import DataSourceUnavailableError
+from digital_twin.preprocess import RAW_FEATURES, TARGETS
 
-from app.db.models.sensor_data import SensorData
-from app.domain.sensor import SensorReading
+REQUIRED_TAGS: tuple[str, ...] = tuple(list(RAW_FEATURES) + list(TARGETS))
+
+# 테스트/로컬 전용 fallback. 운영에서는 lifespan이 SENSOR_COLUMN_MAPPING 누락을 차단한다.
+TAG_TO_DB_COLUMN: dict[str, str] = {tag: tag for tag in REQUIRED_TAGS}
 
 
 class SensorRepository:
-    def __init__(self, db: Session | None) -> None:
-        self.db = db
-
-    def latest(self) -> SensorReading:
-        if self.db is None:
-            return _dummy_series(count=1)[-1]
-        try:
-            row = self.db.execute(
-                select(SensorData).order_by(SensorData.measured_at.desc()).limit(1)
-            ).scalar_one_or_none()
-        except SQLAlchemyError:
-            return _dummy_series(count=1)[-1]
-        if row is None:
-            return _dummy_series(count=1)[-1]
-        return _to_domain(row)
-
-    def history(self, limit: int = 100, offset: int = 0) -> list[SensorReading]:
-        if self.db is None:
-            return _dummy_series(count=limit, offset=offset)
-        try:
-            rows = (
-                self.db.execute(
-                    select(SensorData)
-                    .order_by(SensorData.measured_at.desc())
-                    .offset(offset)
-                    .limit(limit)
-                )
-                .scalars()
-                .all()
-            )
-        except SQLAlchemyError:
-            return _dummy_series(count=limit, offset=offset)
-        # 시간 오름차순으로 반환 (UI에서 그래프 그리기 자연스러움)
-        return [_to_domain(r) for r in reversed(rows)]
-
-
-def _to_domain(row: SensorData) -> SensorReading:
-    return SensorReading(
-        measured_at=row.measured_at,
-        nox_ppm=row.nox_ppm,
-        dgan_offset=row.dgan_offset,
-        syngas_flow=row.syngas_flow,
-        generator_output=row.generator_output,
-        npr_primary=row.npr_primary,
-        ambient_temp=row.ambient_temp,
-        dgan_flow=row.dgan_flow,
-        igv=row.igv,
-    )
-
-
-def _dummy_series(count: int, offset: int = 0) -> list[SensorReading]:
-    """DB 미연결 fallback. sin/cos 합성 시계열."""
-    now = datetime.now(timezone.utc)
-    out: list[SensorReading] = []
-    total = count + offset
-    for i in range(total):
-        ts = now - timedelta(seconds=(total - i) * 5)
-        phase = i / 30.0
-        out.append(
-            SensorReading(
-                measured_at=ts,
-                nox_ppm=25.0 + 8.0 * math.sin(phase + 0.3),
-                dgan_offset=200.0 + 30.0 * math.cos(phase * 0.5),
-                syngas_flow=1500.0 + 100.0 * math.sin(phase),
-                generator_output=248.6 + 5.0 * math.cos(phase * 0.4),
-                npr_primary=1.2 + 0.05 * math.sin(phase * 0.6),
-                ambient_temp=22.0 + 2.0 * math.sin(phase * 0.2),
-                dgan_flow=180.0 + 20.0 * math.cos(phase * 0.5),
-                igv=75.0 + 5.0 * math.sin(phase * 0.3),
-            )
+    def __init__(
+        self,
+        db_session_factory: sessionmaker[Session],
+        tag_to_db_column: dict[str, str] | None = None,
+    ):
+        """`db_session_factory`: DbContext.session_factory (동기 sessionmaker)."""
+        self.session_factory = db_session_factory
+        self.tag_to_db_column = (
+            TAG_TO_DB_COLUMN if tag_to_db_column is None else tag_to_db_column
         )
-    return out[offset:offset + count] if offset > 0 else out
+        missing = set(REQUIRED_TAGS) - set(self.tag_to_db_column)
+        if missing:
+            raise DataSourceUnavailableError(
+                f"sensor column mapping missing tags: {sorted(missing)}"
+            )
+
+    async def fetch_recent_window(self, seconds: int) -> pd.DataFrame:
+        """최근 `seconds`초간 데이터 조회. 총 43컬럼 반환 (오래된 → 최신 순)."""
+        return await asyncio.to_thread(self._fetch_sync, seconds)
+
+    def _fetch_sync(self, seconds: int) -> pd.DataFrame:
+        cols = [self.tag_to_db_column[t] for t in REQUIRED_TAGS]
+        col_list = ", ".join(f'"{c}"' for c in cols)
+        # R12 — 최신 N행을 DESC LIMIT로 가져온 뒤 ASC로 정렬 (시간 분석용)
+        sql = text(
+            f"""
+            WITH recent AS (
+                SELECT measured_at, {col_list}
+                FROM sensor_data
+                ORDER BY measured_at DESC
+                LIMIT :n
+            )
+            SELECT * FROM recent ORDER BY measured_at ASC
+            """
+        )
+        with self.session_factory() as session:
+            result = session.execute(sql, {"n": int(seconds)})
+            rows = result.mappings().all()
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df.rename(
+                columns={v: k for k, v in self.tag_to_db_column.items()},
+                inplace=True,
+            )
+            # A3 (5차 보강) — errors="raise". "coerce"는 NaT silent 폴백 위험.
+            df["measured_at"] = pd.to_datetime(df["measured_at"], errors="raise")
+        return df
