@@ -2158,6 +2158,29 @@ a {
   max-width: none;
 }
 
+.about-repo-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 28px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  color: #3b82f6;
+  text-decoration: none;
+  border: 1px solid #3b82f6;
+  border-radius: 6px;
+  padding: 10px 20px;
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+
+.about-repo-link:hover {
+  color: #3b82f6;
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.08);
+}
+
 .about-page::before {
   content: '';
   position: absolute;
