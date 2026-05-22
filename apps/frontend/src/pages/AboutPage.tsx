@@ -17,6 +17,14 @@ export function AboutPage() {
               미리 가늠해야 했고, 그 판단의 무게가 곧 NOx 초과 사고로 이어졌습니다. NOxO는 그 빈자리를 공정
               시뮬레이션으로 채워, 운영자가 결정을 내리기 전에 결과를 먼저 보게 합니다.
             </p>
+            <a
+              href="https://github.com/taehyunan-99/NOxO_Project_Repo.git"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="about-repo-link"
+            >
+              GitHub · Project Repo ↗
+            </a>
           </div>
           <div className="about-logomark" aria-label="NOxO">
             <div className="about-logomark-inner">
