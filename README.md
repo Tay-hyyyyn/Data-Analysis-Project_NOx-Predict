@@ -6,7 +6,7 @@
 
 운영자가 조작 결과를 미리 보고, 5분 뒤 NOx 상승 위험을 사전에 감지하게 합니다.
 
-[![Live Demo](https://img.shields.io/badge/Live_Demo-15.165.247.216-3b82f6?style=for-the-badge)](http://15.165.247.216/)
+[![Live Demo](https://img.shields.io/badge/Live_Demo-Offline-grey?style=for-the-badge)]()
 ![Period](https://img.shields.io/badge/Period-2026.04.24_~_2026.05.21-6b7280?style=for-the-badge)
 
 ![React](https://img.shields.io/badge/React-19-61dafb?logo=react&logoColor=white)
@@ -29,7 +29,7 @@ NOxO는 이 사각지대를 두 갈래의 시간 축으로 채운다.
 - **PAST → NOW**: 운영자의 조작이 만들어내는 NOx 변화를 Stateful 시뮬레이션으로 미리 본다.
 - **NOW → +5MIN**: 현재 센서 시계열로부터 5분 뒤 NOx를 Cantera Physics 보강 회귀로 예측한다.
 
-> **Live**: [http://15.165.247.216/](http://15.165.247.216/) — EC2 + Docker Compose + nginx + WebSocket 100–500 ms 스트리밍
+> **Live**: 현재 EC2 서버 미운영으로 실시간 라이브 데모는 중단 상태입니다. (로컬 구동 가능)
 
 ---
 
